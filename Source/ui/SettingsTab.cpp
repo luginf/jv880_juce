@@ -40,6 +40,14 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   addAndMakeVisible(chorusToggle);
   chorusToggle.addListener(this);
 
+  addAndMakeVisible(masterVolumeSlider);
+  masterVolumeSlider.addListener(this);
+  masterVolumeSlider.setTextValueSuffix(" %");
+
+  addAndMakeVisible(masterVolumeLabel);
+  masterVolumeLabel.setText("Master Volume", juce::dontSendNotification);
+  masterVolumeLabel.attachToComponent(&masterVolumeSlider, true);
+
   const auto buildTime = juce::Time::getCompilationDate();
   const juce::String buildInfo = "Build Date: " + buildTime.formatted("%d %b %Y, %H:%M:%S");
 
@@ -55,6 +63,7 @@ void SettingsTab::updateValues()
   masterTuneSlider.setValue(((int8_t *)processor.mcu->nvram)[0x00] + 64, juce::dontSendNotification);
   reverbToggle.setToggleState((processor.mcu->nvram[0x02] >> 0) & 1, juce::dontSendNotification);
   chorusToggle.setToggleState((processor.mcu->nvram[0x02] >> 1) & 1, juce::dontSendNotification);
+  masterVolumeSlider.setValue(processor.getMasterVolume() * 100.0, juce::dontSendNotification);
 }
 
 void SettingsTab::resized()
@@ -65,13 +74,15 @@ void SettingsTab::resized()
   const auto sliderLeft2 = sliderLeft1 + getWidth() / 3 + 2;
   const auto sliderLeft3 = sliderLeft2 + getWidth() / 3;
   const auto height = 24;
+  const auto row2Top = top + height + 20;
 
   auto sliderLeft = 120;
 
-  reverbToggle    .setBounds(sliderLeft1 - 90, top, width, height);
-  chorusToggle    .setBounds(sliderLeft2 - 90, top, width, height);
-  masterTuneSlider.setBounds(sliderLeft3, top, width, height);
-  buildDateLabel  .setBounds(10, 735, 800, 20);
+  reverbToggle      .setBounds(sliderLeft1 - 90, top, width, height);
+  chorusToggle      .setBounds(sliderLeft2 - 90, top, width, height);
+  masterTuneSlider  .setBounds(sliderLeft3, top, width, height);
+  masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
+  buildDateLabel    .setBounds(10, 735, 800, 20);
 }
 
 void SettingsTab::sliderValueChanged(juce::Slider *slider)
@@ -86,6 +97,10 @@ void SettingsTab::sliderValueChanged(juce::Slider *slider)
   if (id == MasterTune)
   {
     processor.sendSysexParamChange(0x01, (uint8_t)masterTuneSlider.getValue());
+  }
+  else if (id == MasterVolume)
+  {
+    processor.setMasterVolume((float)masterVolumeSlider.getValue() / 100.0f);
   }
 }
 

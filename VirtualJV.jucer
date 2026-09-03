@@ -20,12 +20,16 @@
       <GROUP id="{C418E418-6F93-9901-9FC9-85CA2D362048}" name="ui">
         <GROUP id="{92591F5A-818C-4026-55C3-A90AD50D111D}" name="widgets">
           <FILE id="ucEKxl" name="Button.h" compile="0" resource="0" file="Source/ui/widgets/Button.h"/>
+          <FILE id="Ch1Ndl" name="CollapseHandle.h" compile="0" resource="0" file="Source/ui/widgets/CollapseHandle.h"/>
           <FILE id="jWuD1t" name="LCDisplay.cpp" compile="1" resource="0" file="Source/ui/widgets/LCDisplay.cpp"/>
           <FILE id="rT02ip" name="LCDisplay.h" compile="0" resource="0" file="Source/ui/widgets/LCDisplay.h"/>
           <FILE id="zXQ57H" name="Menu.h" compile="0" resource="0" file="Source/ui/widgets/Menu.h"/>
           <FILE id="LoE4qt" name="Slider.h" compile="0" resource="0" file="Source/ui/widgets/Slider.h"/>
           <FILE id="LGmaEG" name="TabBar.h" compile="0" resource="0" file="Source/ui/widgets/TabBar.h"/>
           <FILE id="Ie0u9n" name="TextEdit.h" compile="0" resource="0" file="Source/ui/widgets/TextEdit.h"/>
+          <FILE id="Vk1KbH" name="VirtualKeyboard.cpp" compile="1" resource="0" file="Source/ui/widgets/VirtualKeyboard.cpp"/>
+          <FILE id="Vk2Hst" name="VirtualKeyboard.h" compile="0" resource="0" file="Source/ui/widgets/VirtualKeyboard.h"/>
+          <FILE id="Vk3Hos" name="VirtualKeyboardHost.h" compile="0" resource="0" file="Source/ui/widgets/VirtualKeyboardHost.h"/>
         </GROUP>
         <FILE id="CEIonD" name="EditCommonTab.cpp" compile="1" resource="0"
               file="Source/ui/EditCommonTab.cpp"/>

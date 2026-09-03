@@ -37,15 +37,22 @@ private:
 
     enum SettingsWidgets
     {
-        MasterTune = 10U,
-        Reverb     = 11U,
-        Chorus     = 12U,
+        MasterTune   = 10U,
+        Reverb       = 11U,
+        Chorus       = 12U,
+        MasterVolume = 13U,
     };
 
     Slider masterTuneSlider{ MasterTune, 1, 127, 1, 64, true };
     juce::Label masterTuneLabel;
     Button reverbToggle{ Reverb, "Reverb" };
     Button chorusToggle{ Chorus, "Chorus" };
+    // Plugin-side output trim, not a real JV-880 hardware/MIDI parameter (the real unit's
+    // volume knob is an analog attenuator, nothing SysEx/nvram reaches) - applied as a plain
+    // gain in VirtualJVProcessor::processBlock(). Session-only, like the VirtualKeyboard
+    // settings: not part of DataToSave (see that struct's own comment on why).
+    Slider masterVolumeSlider{ MasterVolume, 0, 100, 1, 100 };
+    juce::Label masterVolumeLabel;
     juce::Label buildDateLabel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SettingsTab)

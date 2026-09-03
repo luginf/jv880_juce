@@ -36,7 +36,9 @@ static const char *groupNames[] = {
     "Exp 17 Country",
     "Exp 18 Latin",
     "Exp 19 House",
-    "Exp Custom"
+    "Exp Custom",
+    "User" // patches saved via Save As... (userGroupIndex in PluginProcessor.h) - not a ROM
+           // bank, so the romInfos-loaded checks below all skip this row.
 };
 
 const int columns = 6;
@@ -54,9 +56,17 @@ public:
 
   VirtualJVProcessor &processor;
 
+  // Discards edits made to the current patch since it was picked - Alan's request. A plain
+  // juce::TextButton, not the custom widgets/Button.h (that one's a ToggleButton for on/off
+  // switches, not a one-shot action).
+  juce::TextButton revertButton { "Revert to Original" };
+  // Saves the current patch/rhythm-set to the "User" bank under a new name - Alan's request.
+  juce::TextButton saveAsButton { "Save As..." };
+  std::unique_ptr<juce::FileChooser> saveAsChooser; // kept alive until launchAsync()'s callback fires
+
   class CategoriesListModel : public juce::ListBoxModel,
                               public juce::ChangeBroadcaster {
-    int getNumRows() override { return NUM_EXPS + 1; }
+    int getNumRows() override { return userGroupIndex + 1; }
 
     void paintListBoxItem(int rowNumber, juce::Graphics &g, int width,
                           int height, bool rowIsSelected) override {
@@ -65,13 +75,15 @@ public:
 
       g.setColour(rowIsSelected ? juce::Colours::black : juce::Colours::white);
 
-      if (rowNumber < NUM_EXPS + 1)
+      if (rowNumber < userGroupIndex && rowNumber > 0)
       {
-        if (rowNumber > 0)
-        {
-          g.setOpacity(romInfos[romCountRequired + rowNumber].loaded ? 1.f : 0.25f);
-        }
+        g.setOpacity(romInfos[romCountRequired + rowNumber].loaded ? 1.f : 0.25f);
+      }
+      // else: row 0 (880 Factory, always loaded) and userGroupIndex (User, not ROM-backed at
+      // all) both stay at full opacity.
 
+      if (rowNumber <= userGroupIndex)
+      {
         g.drawFittedText(groupNames[rowNumber], {5, 0, width, height - 2},
                          juce::Justification::left, 1);
       }
@@ -105,6 +117,14 @@ public:
     }
 
     int getNumRows() override {
+      // The User bank isn't backed by any ROM (userGroupIndex, see PluginProcessor.h) - it's
+      // however many patches are actually on disk, with no romInfos[]-loaded gate to check
+      // (indexing romInfos[groupI + romCountRequired] for that group would in fact run past
+      // the end of the array, since it's one past the last real ROM-backed group).
+      if (groupI == userGroupIndex)
+        return std::min(endI - startI,
+                        (int)parent->processor.patchInfoPerGroup[groupI].size() - startI);
+
       if (!parent->processor.loaded ||
           (groupI > 0 && !romInfos[std::max(groupI, 0) + romCountRequired].loaded) ||
           (groupI == 1 && !romInfos[std::max(groupI, 0) + romCountRequired - 1].loaded))
@@ -123,17 +143,21 @@ public:
       g.fillAll(rowIsSelected ? juce::Colour(0xff42A2C8)
                               : juce::Colour(0xff263238));
 
-      g.setColour(rowIsSelected ? juce::Colours::black : juce::Colours::white);
-
       if (!parent->processor.loaded) {
         return;
       }
 
-      int length =
-          parent->processor.patchInfoPerGroup[groupI][rowNumber + startI]
-              ->nameLength;
-      auto strPtr = (const char *)parent->processor.patchInfoPerGroup[groupI][rowNumber + startI]->name;
-      juce::String str = juce::String(strPtr, length);
+      auto *info = parent->processor.patchInfoPerGroup[groupI][rowNumber + startI];
+
+      // Edited-but-not-(re)saved patches show in amber instead of white - Alan's request, so
+      // they're easy to spot while browsing. Not shown once selected: the row's already black
+      // on the selection highlight, and that's a stronger enough cue on its own.
+      const bool modified = !rowIsSelected && parent->processor.isPatchModified(info->iInList);
+      g.setColour(rowIsSelected ? juce::Colours::black
+                  : modified    ? juce::Colour(0xffffb238)
+                                : juce::Colours::white);
+
+      juce::String str = juce::String(info->name, info->nameLength);
       g.drawFittedText(str, {5, 0, width, height - 2},
                        juce::Justification::left, 1);
 
