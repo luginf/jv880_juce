@@ -77,12 +77,23 @@ jobs:
     - name: "Build jv880"
       run: sh -ex ./build/build-win.sh
       shell: bash
+    - name: "zip Windows VST3"
+      # jv880.vst3 is itself a bundle directory (Contents/x86_64-win/jv880.vst3 +
+      # Contents/Resources/moduleinfo.json), not a flat file - uploading it raw got flattened by
+      # the release job's merge-multiple, scattering moduleinfo.json loose and leaving a bare
+      # "jv880.vst3" that was really just the inner DLL, not a valid bundle. Zip it like the
+      # macOS/Linux jobs already do for their own bundles.
+      run: |
+           cd "./Builds/VisualStudio2022/x64/Release/VST3"
+           zip -r jv880.vst3.windows.zip jv880.vst3
+           cd -
+      shell: bash
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: jv880-win
         path: |
-              ./Builds/VisualStudio2022/x64/Release/VST3/jv880.vst3
+              ./Builds/VisualStudio2022/x64/Release/VST3/jv880.vst3.windows.zip
               ./Builds/VisualStudio2022/x64/Release/Standalone Plugin/jv880.exe
   build-osx:
     runs-on: macos-15

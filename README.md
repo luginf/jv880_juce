@@ -11,7 +11,7 @@ You'll need ROMs to use this software. During the first run you will be able to 
 - [MacOS AU](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.component.macOS.zip)
 - [MacOS VSTi](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.vst3.macOS.zip)
 - [MacOS Standalone](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.app.macOS.zip)
-- [Windows VSTi](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.vst3)
+- [Windows VSTi](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.vst3.windows.zip)
 - [Windows Standalone](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.exe)
 - [Linux VSTi](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.vst3.linux.zip)
 - [Linux LV2](https://github.com/luginf/jv880_juce/releases/download/latest/jv880.lv2.linux.zip)
