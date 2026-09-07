@@ -4,6 +4,13 @@ Notes de contexte pour Claude Code sur ce projet (émulateur JUCE du Roland JV-8
 
 ## Mode Performance
 
+> **Superseded (2026-09-08)** : les deux sections ci-dessous ("Pourquoi ce n'est pas implémenté
+> à l'identique ici" et "Ce qui a été construit à la place") décrivent le clone à 4 moteurs
+> parallèles qui a été le premier jet de cette fonctionnalité. Il a depuis été **entièrement
+> remplacé** par le vrai mode Performance natif du firmware (1 seul moteur) - voir "Mode
+> Performance v2" plus bas pour l'implémentation actuelle. Gardé tel quel pour l'historique/le
+> contexte de la décision initiale.
+
 ### Le mode Performance sur le vrai JV-880
 
 Vérifié dans le manuel d'origine (pas seulement de mémoire) :
@@ -112,7 +119,14 @@ bloc (gestion MIDI + rendu, Patch mode ou Performance mode indifféremment). Lec
 lock-free, affichée dans l'onglet Settings (label "DSP Load: NN.N %", `SettingsTab::dspLoadLabel`,
 rafraîchi 4x/seconde via un `juce::Timer`). Vérifié empiriquement dans Xvfb : ~17% en Patch mode
 au repos contre ~85% avec 4 slots actifs en Performance - confirme concrètement le surcoût ~4x
-déjà documenté plus haut, et donne à Alan un repère direct pour choisir sa taille de buffer.
+alors en vigueur, et donne à Alan un repère direct pour choisir sa taille de buffer.
+
+**Périmé depuis le passage au mode Performance v2 (2026-09-08, voir plus bas)** : Performance
+mode tourne maintenant sur le même unique moteur que Patch mode, donc ce ~85 % n'a plus lieu
+d'être - le DSP Load attendu en Performance est désormais du même ordre que Patch mode (~17 %),
+quel que soit le nombre de Parts actives. Pas re-mesuré dans Xvfb (pas de device audio
+disponible dans ce sandbox), mais attendu directement de l'architecture (un seul appel
+`updateSC55WithSampleRate()` par bloc, comme en mode Patch).
 
 Détails complets de la conception (structures de données, format `.jvpf` octet par octet, bugs
 trouvés/corrigés pendant les tests) : voir l'historique de conversation Claude Code du
@@ -205,6 +219,128 @@ Sert un double usage : (1) outil d'investigation pour la RE du mode Performance 
 et (2) à terme, chemin d'accès générique à tout écran firmware qui n'a pas (ou n'aura jamais)
 d'équivalent en écriture NVRAM directe.
 
+## Mode Performance v2 : le vrai mode natif du firmware, 1 seul moteur (2026-09-08)
+
+**Le clone à 4 moteurs décrit ci-dessus a été entièrement remplacé.** Alan a signalé que 3 patches
+actifs étaient déjà lourds, et qu'un 4e faisait grimper le DSP à ~100 %. La piste de RE marquée
+"à reprendre seulement si Alan le demande" a été reprise, elle a abouti, et le mode Performance
+tourne maintenant sur le **même moteur MCU unique** que le mode Patch - même coût CPU que le mode
+Patch simple, quel que soit le nombre de parties actives (vérifié : plus de code de mixage à 4
+moteurs du tout dans `processBlock()`).
+
+### Comment ça a été trouvé
+
+Piste donnée par Alan : `~/src/D110/edisyn/edisyn/synth/rolandjv880/` contient le support JV-880
+complet du logiciel Edisyn (Sean Luke, licence Apache 2.0) - un éditeur de patches universel déjà
+entièrement rétro-ingénié contre le vrai hardware. `RolandJV880Multi.java` (l'éditeur "Multi" =
+Performance) et sa classe de reconnaissance `RolandJV880MultiRec.java` documentent la carte
+d'adresses SysEx complète du mode Performance, directement transcrite depuis le MIDI
+Implementation officiel Roland - jamais besoin d'avoir deviné un offset NVRAM à l'aveugle.
+
+Le mécanisme clé (déjà présent partiellement dans ce projet via
+`VirtualJVProcessor::sendSysexParamChange()`, utilisé par SettingsTab pour Master Tune/Reverb/
+Chorus) : une commande SysEx Roland **DT1** (`F0 41 10 46 12 <adresse 4x7bit> <données...>
+<checksum> F7`) envoyée dans le MIDI IN émulé (`mcu->postMidiSC55()`) est interprétée par le
+**vrai firmware lui-même**, qui écrit la donnée où il faut en RAM - inutile de connaître l'offset
+RAM réel, le firmware s'en charge, exactement comme le ferait un vrai JV-880 recevant un dump
+d'un logiciel comme Edisyn.
+
+### Preuve empirique (avant d'écrire le code final)
+
+Une session de validation headless (sans device audio ni fenêtre - voir "Outils" ci-dessous) a
+confirmé, dans l'ordre :
+1. Écrire l'octet Système `00 00 00 00 = 0x00` bascule `nvram[0x11]` de `01` à `00` - **exactement**
+   ce que fait l'appui simulé sur PATCH/PERFORM (bouton physique), confirmant qu'il s'agit bien du
+   même flag de mode.
+2. Écrire le bloc "Performance Common" (31 octets, nom + effets + voice reserve) et un bloc
+   "Part" (35 octets, patch/canal/niveau/pan...) à l'adresse `00 00 10 00`/`00 00 1n 00`
+   atterrissent en RAM système (`sram`, PAS `nvram` - d'où l'échec des premiers essais qui ne
+   traçaient que la NVRAM battery-backed).
+3. **Capture d'écran du LCD réel** (rendu par le firmware, dumpé en PNG directement depuis le
+   self-test, sans fenêtre) : après ces écritures, l'écran affiche bien "Perf" avec les 8 parties
+   numérotées et le nom qu'on a envoyé - preuve la plus forte possible, le firmware affiche
+   littéralement ce qu'on lui a envoyé.
+4. **Rendu audio réel** : note jouée sur le canal MIDI d'une Part → signal non nul mesuré
+   (peak/RMS) - le son sort vraiment, pas seulement l'affichage.
+5. **Hypothèse de mapping des banques vérifiée** : les catégories de ce projet "Internal A"/
+   "Internal B" (patchInfos[] index 0-63 / 64-127, lues directement en ROM) sont exactement les
+   vraies banques **Preset A** (`bank=2`) et **Preset B** (`bank=3`) du firmware - confirmé en
+   assignant une Part à `bank*64+number` et en retrouvant le nom du patch ROM attendu ("A.Piano 1",
+   "Pizzicato") dans la RAM après coup. Une 3e catégorie ROM ("Internal User", index 128-191,
+   jamais exposée sous ce nom dans le Browse mais présente dans `patchInfos[]`) s'est révélée être
+   la vraie banque **Internal** (`bank=0`, celle qui est réinscriptible sur le vrai hardware) :
+   son patch #1 ROM ("JV Strings") correspond exactement au patch par défaut affiché à l'écran de
+   boot ("I01:JV Strings"). Résultat : **192 patches + 3 rythmes** (tout le contenu ROM-natif que
+   ce projet expose déjà) sont assignables à une Part sans aucun travail supplémentaire.
+
+### Ce qui n'est PAS encore assignable à une Part
+
+Les patches issus des ROMs d'expansion (Card/SR-JV) et les patches "User" sauvegardés via Save
+As... (`patchInfos[]` index ≥ 195) ne sont **pas** assignables à une Part de Performance : le
+firmware ne référence jamais les données d'un patch en clair depuis une Part, seulement un
+numéro dans sa propre mémoire de patches (Patch Memory) - il faudrait donc *aussi* écrire ces
+patches dans la vraie banque Internal réinscriptible du firmware (adresse trouvée dans
+`RolandJV880.java` : `AA=1,BB=numéro+0x40,CC=0x20` pour l'écriture, format encore différent -
+34+4×116 octets avec un layout nibblé propre au format "Patch" complet, pas encore traduit depuis
+la structure `dataStructures.h` de ce projet). `PatchBrowser`
+(`VirtualJVProcessor::isEligibleForPerformancePart()`) filtre silencieusement ces patches - le
+clic droit "Send to Performance Part" n'apparaît simplement pas pour eux. Piste de suite
+naturelle si Alan le demande.
+
+### Architecture du code
+
+- **`Source/PluginProcessor.h`** : `PerformancePart` (nouvelle struct, remplace
+  `PerformanceSlot`) - 8 éléments (`kNumPerformanceParts`), légère (pas de copie de patch en
+  octets bruts, juste `bank`/`number` + affichage), plus `performanceName[13]`. Plus aucun
+  `perfEngines`/`perfScratch` - un seul `mcu`.
+- **`Source/PluginProcessor.cpp`** :
+  - `sendSysexBlock()` : envoi DT1 bas niveau générique (adresse + N octets de données),
+    factorisé depuis l'ancien `sendSysexParamChange()` (qui n'appelle plus que
+    `sendSysexBlock(addr, &value, 1)`).
+  - `pushPerformanceCommonToEngine()`/`pushPerformancePartToEngine()` : construisent et envoient
+    les blocs Common/Part. Les champs effets/voice-reserve du Common sont laissés à 0 (vérifié
+    qu'une Part sans voice reserve joue quand même - le voice reserve ne sert qu'à la priorité en
+    cas de saturation polyphonique, pas à activer/désactiver une Part).
+  - `performancePatchMapping()` (namespace anonyme) : la table de correspondance
+    `patchInfos[]` index → `bank`/`number`/`isRhythm` décrite ci-dessus.
+  - `setPerformanceModeEnabled()` : bascule juste l'octet Système 0, puis pousse Common + les 8
+    Parts si activé - **aucune reconstruction d'un second moteur**, contrairement à l'ancienne
+    version.
+  - `processBlock()` : simplifié à un seul chemin de rendu (`mcu->updateSC55WithSampleRate()`),
+    que le mode Performance soit actif ou non. Seule différence : en mode Patch, chaque message
+    MIDI entrant est forcé sur le canal RxCH courant (comme avant) ; en mode Performance, le canal
+    d'origine du message est transmis tel quel, et c'est le firmware qui route vers la bonne
+    Part selon son `receivechannel` configuré - exactement comme le ferait un vrai câble MIDI
+    multitimbral sur un vrai JV-880.
+  - Persistance (`.jvpf` / `performance_session.dat`) : format ré-écrit pour 8 Parts légères
+    (24 octets/Part + 12 octets de nom, contre l'ancien format qui embarquait jusqu'à 0xa7c
+    octets bruts par slot) - un ancien fichier 4-slots ne sera simplement pas reconnu (mauvaise
+    taille), sans risque de mauvaise lecture.
+- **`Source/ui/PerformanceTab.h/.cpp`** : 8 lignes (au lieu de 4), un champ "Performance Name" en
+  haut, pan 0-127 (au lieu de -64..63 - correspond directement au champ `partpan` du firmware).
+- **`Source/ui/PatchBrowser.h`** : le clic droit "Send to Performance Part N" ne propose que les
+  Parts compatibles (les 7 Parts ton pour un patch classique, la seule Part 8 pour un rythme), et
+  seulement si `isEligibleForPerformancePart()` accepte le patch.
+
+### Outils de validation ajoutés (dormants, sans coût si désactivés)
+
+En plus de `JV880_TRACE_NVRAM`/`JV880_SELFTEST_BUTTON` (déjà documentés plus haut) :
+- `JV880_SELFTEST_PERF=1` (+ `JV880_SELFTEST_PRE_MS`, `JV880_SELFTEST_PART1_PATCH`,
+  `JV880_SELFTEST_PART2_PATCH`) : test bas niveau par DT1 bruts, utilisé pour découvrir/valider
+  la carte d'adresses avant d'écrire le code final. Dump `/tmp/jv880_lcd_perf.png`,
+  `/tmp/jv880_nvram_perf.bin`, `/tmp/jv880_sram_perf.bin`.
+- `JV880_SELFTEST_PERF2=1` : test de bout en bout via la **vraie API publique**
+  (`sendPatchToPerformancePart()`, `setPerformanceModeEnabled()`, etc.), donc le meilleur test de
+  non-régression pour cette fonctionnalité. Bascule Performance→Patch et vice-versa, vérifie le
+  rendu audio à deux notes simultanées sur deux canaux différents, dump
+  `/tmp/jv880_lcd_perf2.png` et `/tmp/jv880_lcd_backtopatch.png`.
+
+Les deux tournent entièrement headless (aucun device audio ni `$DISPLAY` requis - le hook
+s'exécute et `exit(0)` avant toute création de fenêtre), ex. :
+```
+JV880_SELFTEST_PERF2=1 ./Builds/LinuxMakefile/build/jv880
+```
+
 **Disposition (2026-09-07, suite au retour d'Alan avec une photo du panneau réel)** : les
 boutons sont maintenant rangés dans l'ordre de lecture du vrai panneau (gauche→droite,
 haut→bas), pas dans l'ordre de l'enum `MCU_BUTTON_*` : cluster Data Entry Dial en haut (bouton
@@ -222,3 +358,11 @@ une coche **"Hold DATA while rotating"** qui maintient `MCU_BUTTON_DATA` enfonc�
 skin (image du panneau JV-880 en fond, boutons superposés aux vraies positions/formes) plutôt que
 la grille de `juce::TextButton` actuelle - purement cosmétique, aucun changement de mécanisme
 (`LCD_SendButton`/`MCU_EncoderTrigger` restent les mêmes peu importe le rendu visuel).
+
+**Sources photo repérées (2026-09-08)** : pas de SVG existant trouvé sur le web pour le panneau
+JV-880 (cherché - rien chez Roland ni dans la communauté). En revanche
+https://www.synthmania.com/jv-880.htm héberge plusieurs photos pleine résolution (~1750×1160,
+Canon EOS REBEL T3i) du panneau avant, quasi de face et bien éclairées - `Roland JV-880 002.JPG`
+en particulier est un bon candidat de référence pour une vectorisation (voir
+`Roland%20JV-880/Images/Roland%20JV-880%20NNN.JPG` sur ce site, NNN = 002 à 008). Pas encore
+téléchargées dans le repo ni vectorisées - juste la piste de départ si ce chantier est repris.

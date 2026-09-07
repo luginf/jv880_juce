@@ -229,11 +229,17 @@ public:
                 ->iInList);
     }
 
-    // Right-click -> "Send to Performance Slot N" (Alan's request, 2026-09-07). JUCE's ListBox
-    // selects the clicked row (triggering selectedRowsChanged() above, i.e. also loading it into
-    // the main single-patch editor) before calling this, even on a right-click - not worth
-    // fighting for a standard ListBox short of a fully custom row component, and arguably useful
-    // anyway (you can hear the patch while sending it to a slot).
+    // Right-click -> "Send to Performance Part N" (Alan's request, 2026-09-07/08). JUCE's
+    // ListBox selects the clicked row (triggering selectedRowsChanged() above, i.e. also loading
+    // it into the main single-patch editor) before calling this, even on a right-click - not
+    // worth fighting for a standard ListBox short of a fully custom row component, and arguably
+    // useful anyway (you can hear the patch while sending it to a part).
+    //
+    // Only offered for patches VirtualJVProcessor::isEligibleForPerformancePart() accepts (the
+    // 195 ROM-native factory tones/rhythm-sets - see PerformancePart's own comment in
+    // PluginProcessor.h for why Card/expansion/User patches aren't there yet), and only for the
+    // 7 tone Parts or the 1 fixed Rhythm Part (index 7) matching the clicked patch's own kind -
+    // real hardware Parts can't mix the two.
     void listBoxItemClicked(int row, const juce::MouseEvent &e) override {
       if (!e.mods.isPopupMenu() || !parent->processor.loaded) {
         return;
@@ -244,6 +250,10 @@ public:
         return;
       }
       int index = parent->processor.patchInfoPerGroup[groupI][selected]->iInList;
+      if (!parent->processor.isEligibleForPerformancePart(index)) {
+        return;
+      }
+      const bool isDrums = parent->processor.patchInfos[index].drums;
 
       // Deferred to the next message-loop turn (confirmed necessary while testing this
       // feature): selecting a row that also flips Patch/Rhythm mode makes
@@ -253,16 +263,21 @@ public:
       // Showing the popup inline, mid-rebuild, made it silently fail to appear. Letting that
       // settle first sidesteps relying on JUCE's reparenting-during-event-dispatch behaviour.
       juce::Component::SafePointer<PatchBrowser> safeParent(parent);
-      juce::MessageManager::callAsync([safeParent, index] {
+      juce::MessageManager::callAsync([safeParent, index, isDrums] {
         if (safeParent == nullptr) {
           return;
         }
 
+        constexpr int numParts = VirtualJVProcessor::kNumPerformanceParts;
         auto menu = juce::PopupMenu();
-        for (int s = 0; s < 4; s++) {
-          auto &slot = safeParent->processor.performanceSlots[s];
-          juce::String label = "Send to Performance Slot " + juce::String(s + 1) +
-                               (slot.present ? " (" + juce::String(slot.name) + ")" : " (Empty)");
+        for (int s = 0; s < numParts; s++) {
+          const bool partIsRhythm = (s == numParts - 1);
+          if (partIsRhythm != isDrums)
+            continue; // rhythm sets only go to the fixed Rhythm Part, tones only to the other 7
+          auto &part = safeParent->processor.performanceParts[s];
+          juce::String label = "Send to Performance Part " + juce::String(s + 1) +
+                               (partIsRhythm ? " (Rhythm)" : "") +
+                               (part.present ? " (" + juce::String(part.name) + ")" : " (Empty)");
           menu.addItem(s + 1, label);
         }
         menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(),
@@ -270,8 +285,8 @@ public:
           if (safeParent == nullptr) {
             return;
           }
-          if (result >= 1 && result <= 4)
-            safeParent->processor.sendPatchToPerformanceSlot(index, result - 1);
+          if (result >= 1 && result <= VirtualJVProcessor::kNumPerformanceParts)
+            safeParent->processor.sendPatchToPerformancePart(index, result - 1);
         });
       });
     }

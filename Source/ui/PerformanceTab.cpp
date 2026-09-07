@@ -17,6 +17,14 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
     processor.setPerformanceModeEnabled(enablePerformanceToggle.getToggleState());
   };
 
+  nameLabel.setText("Performance Name", juce::dontSendNotification);
+  addAndMakeVisible(nameLabel);
+
+  nameEditor.setInputRestrictions(12);
+  addAndMakeVisible(nameEditor);
+  nameEditor.onFocusLost = [this] { processor.setPerformanceName(nameEditor.getText()); };
+  nameEditor.onReturnKey = [this] { processor.setPerformanceName(nameEditor.getText()); };
+
   channelHeader.setText("Channel", juce::dontSendNotification);
   levelHeader.setText("Level", juce::dontSendNotification);
   panHeader.setText("Pan", juce::dontSendNotification);
@@ -26,32 +34,33 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
     addAndMakeVisible(*header);
   }
 
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++)
   {
-    auto &row = slotRows[i];
+    auto &row = partRows[(size_t)i];
+    const bool isRhythmPart = (i == VirtualJVProcessor::kNumPerformanceParts - 1);
 
     addAndMakeVisible(row.nameLabel);
-    row.nameLabel.setText("Slot " + juce::String(i + 1) + ": Empty", juce::dontSendNotification);
+    row.nameLabel.setText("Part " + juce::String(i + 1) + (isRhythmPart ? " (Rhythm): Empty" : ": Empty"),
+                          juce::dontSendNotification);
 
     addAndMakeVisible(row.channelCombo);
-    row.channelCombo.addItem("All", 1);
     for (int ch = 1; ch <= 16; ch++)
-      row.channelCombo.addItem(juce::String(ch), ch + 1);
+      row.channelCombo.addItem(juce::String(ch), ch);
     row.channelCombo.setSelectedId(1, juce::dontSendNotification);
-    row.channelCombo.onChange = [this, i] { pushSlotParams(i); };
+    row.channelCombo.onChange = [this, i] { pushPartParams(i); };
 
     addAndMakeVisible(row.levelSlider);
-    row.levelSlider.onValueChange = [this, i] { pushSlotParams(i); };
+    row.levelSlider.onValueChange = [this, i] { pushPartParams(i); };
 
     addAndMakeVisible(row.panSlider);
-    row.panSlider.onValueChange = [this, i] { pushSlotParams(i); };
+    row.panSlider.onValueChange = [this, i] { pushPartParams(i); };
 
     addAndMakeVisible(row.enabledToggle);
     row.enabledToggle.setToggleState(true, juce::dontSendNotification);
-    row.enabledToggle.onClick = [this, i] { pushSlotParams(i); };
+    row.enabledToggle.onClick = [this, i] { pushPartParams(i); };
 
     addAndMakeVisible(row.clearButton);
-    row.clearButton.onClick = [this, i] { processor.clearPerformanceSlot(i); };
+    row.clearButton.onClick = [this, i] { processor.clearPerformancePart(i); };
   }
 
   bankHeaderLabel.setText("Performance Bank", juce::dontSendNotification);
@@ -104,36 +113,39 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
 
 PerformanceTab::~PerformanceTab() {}
 
-void PerformanceTab::pushSlotParams(int slotIndex)
+void PerformanceTab::pushPartParams(int partIndex)
 {
-  auto &row = slotRows[slotIndex];
-  processor.setPerformanceSlotParams(slotIndex, row.channelCombo.getSelectedId() - 1,
+  auto &row = partRows[(size_t)partIndex];
+  processor.setPerformancePartParams(partIndex, row.channelCombo.getSelectedId(),
                                      (int)row.levelSlider.getValue(),
                                      (int)row.panSlider.getValue(),
                                      row.enabledToggle.getToggleState());
 }
 
-void PerformanceTab::updateSlotRowFromState(int slotIndex)
+void PerformanceTab::updatePartRowFromState(int partIndex)
 {
-  auto &slot = processor.performanceSlots[slotIndex];
-  auto &row = slotRows[slotIndex];
+  auto &part = processor.performanceParts[(size_t)partIndex];
+  auto &row = partRows[(size_t)partIndex];
+  const bool isRhythmPart = (partIndex == VirtualJVProcessor::kNumPerformanceParts - 1);
 
-  row.nameLabel.setText(slot.present
-                             ? "Slot " + juce::String(slotIndex + 1) + ": " + juce::String(slot.name)
-                             : "Slot " + juce::String(slotIndex + 1) + ": Empty",
-                         juce::dontSendNotification);
-  row.channelCombo.setSelectedId(slot.midiChannel + 1, juce::dontSendNotification);
-  row.levelSlider.setValue(slot.level, juce::dontSendNotification);
-  row.panSlider.setValue(slot.pan, juce::dontSendNotification);
-  row.enabledToggle.setToggleState(slot.enabled, juce::dontSendNotification);
+  juce::String label = "Part " + juce::String(partIndex + 1) + (isRhythmPart ? " (Rhythm): " : ": ")
+                      + (part.present ? juce::String(part.name) : "Empty");
+  row.nameLabel.setText(label, juce::dontSendNotification);
+  row.channelCombo.setSelectedId(part.midiChannel, juce::dontSendNotification);
+  row.levelSlider.setValue(part.level, juce::dontSendNotification);
+  row.panSlider.setValue(part.pan, juce::dontSendNotification);
+  row.enabledToggle.setToggleState(part.enabled, juce::dontSendNotification);
 }
 
 void PerformanceTab::refreshFromProcessor()
 {
   enablePerformanceToggle.setToggleState(processor.performanceModeEnabled, juce::dontSendNotification);
 
-  for (int i = 0; i < 4; i++)
-    updateSlotRowFromState(i);
+  if (!nameEditor.hasKeyboardFocus(false))
+    nameEditor.setText(juce::String(processor.performanceName).trimEnd(), juce::dontSendNotification);
+
+  for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++)
+    updatePartRowFromState(i);
 
   bankListBox.updateContent();
   bankListBox.repaint();
@@ -145,6 +157,8 @@ void PerformanceTab::resized()
   int y = margin;
 
   enablePerformanceToggle.setBounds(margin, y, 260, 24);
+  nameLabel.setBounds(margin + 270, y, 130, 24);
+  nameEditor.setBounds(margin + 270 + 130 + 6, y, 160, 24);
   y += 24 + margin;
 
   const int nameW = 220, comboW = 80, sliderW = 120, toggleW = 50, clearW = 70;
@@ -158,8 +172,8 @@ void PerformanceTab::resized()
   panHeader.setBounds(headerX, y, sliderW, 18);
   y += 18 + 4;
 
-  const int rowH = 28;
-  for (auto &row : slotRows)
+  const int rowH = 26;
+  for (auto &row : partRows)
   {
     int x = margin;
     row.nameLabel.setBounds(x, y, nameW, rowH);

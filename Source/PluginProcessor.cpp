@@ -10,6 +10,7 @@
 #include "PluginEditor.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 // Nuked-SC55-derived cores like this one emulate the real chip's output level bit-for-bit
@@ -21,12 +22,6 @@ namespace {
 // against a reference by ear) - the Settings tab's Master Volume slider stacks on top of it as
 // a pure attenuator, so if this still isn't enough Alan can say so and it can be raised further.
 constexpr float kOutputMakeupGain = 1.5f;
-
-// Performance mode sums up to 4 full-level engines before kOutputMakeupGain is applied, so it
-// needs its own separate attenuation rather than reusing that single-engine figure as-is (which
-// would clip easily) or dividing flatly by 4 (which would needlessly quieten a single active
-// slot). Starting estimate, same caveat as kOutputMakeupGain's own comment - adjust by ear.
-constexpr float kPerformanceModeGain = 0.6f;
 
 juce::File keyboardSettingsFile() {
   return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
@@ -138,6 +133,207 @@ VirtualJVProcessor::VirtualJVProcessor()
     }
 
     std::fprintf(stderr, "[selftest] done, exiting\n");
+    std::exit(0);
+  }
+
+  // Headless validation for driving the firmware's *native* Performance mode over SysEx DT1
+  // instead of button-press NVRAM diffing - address map transcribed from
+  // ~/src/D110/edisyn/edisyn/synth/rolandjv880/RolandJV880Multi.java (Sean Luke's Edisyn, already
+  // reverse-engineered against real JV-880/JV-80 hardware). Temporary investigation tool, see
+  // CLAUDE.md's "Mode Performance" section.
+  if (std::getenv("JV880_SELFTEST_PERF")) {
+    const int preMs = std::getenv("JV880_SELFTEST_PRE_MS") ? std::atoi(std::getenv("JV880_SELFTEST_PRE_MS")) : 3000;
+    const int settleMs = std::getenv("JV880_SELFTEST_POST_MS") ? std::atoi(std::getenv("JV880_SELFTEST_POST_MS")) : 300;
+
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+
+    auto sendDT1 = [&](uint8_t AA, uint8_t BB, uint8_t CC, uint8_t DD, const std::vector<uint8_t> &payload) {
+      std::vector<uint8_t> msg = { 0xF0, 0x41, 0x10, 0x46, 0x12, AA, BB, CC, DD };
+      uint32_t sum = AA + BB + CC + DD;
+      for (auto b : payload) { msg.push_back(b); sum += b; }
+      uint8_t checksum = (uint8_t)((0x80 - (sum & 0x7F)) & 0x7F);
+      msg.push_back(checksum);
+      msg.push_back(0xF7);
+      mcu->postMidiSC55(msg.data(), (int)msg.size());
+    };
+
+    std::fprintf(stderr, "[selftest-perf] booting %d ms...\n", preMs);
+    runMs(preMs);
+
+    std::fprintf(stderr, "[selftest-perf] switching to Performance mode (System 00 00 00 00 = 0)\n");
+    sendDT1(0, 0, 0, 0, { 0x00 });
+    runMs(settleMs);
+
+    std::fprintf(stderr, "[selftest-perf] writing Performance Common (name marker)\n");
+    std::vector<uint8_t> common(31, 0);
+    const char *marker = "TESTPERF1234";
+    for (int i = 0; i < 12; i++) common[(size_t)i] = (uint8_t)marker[i];
+    sendDT1(0, 0, 0x10, 0x00, common);
+    runMs(settleMs);
+
+    // Verify whether this project's "Internal A"/"Internal B" ROM categories are really the
+    // firmware's own read-only Preset A / Preset B patch banks (bank 2 / bank 3 in the
+    // bank*64+number patchnumber encoding) - if so, Performance Parts can reference any of those
+    // 128 factory patches with zero extra work (no need to also write into the real writable
+    // Internal Patch Memory bank). Part 1 -> Preset A #1 (value 128), Part 2 -> Preset B #1
+    // (value 192) - both should read back on the LCD as "A.Piano 1" per patchInfos[]'s own
+    // Internal A/B index 0 (see the Browse tab's first two columns).
+    int part1PatchValue = std::getenv("JV880_SELFTEST_PART1_PATCH") ? std::atoi(std::getenv("JV880_SELFTEST_PART1_PATCH")) : 128;
+    int part2PatchValue = std::getenv("JV880_SELFTEST_PART2_PATCH") ? std::atoi(std::getenv("JV880_SELFTEST_PART2_PATCH")) : 192;
+
+    std::fprintf(stderr, "[selftest-perf] writing Part 1 (patch=%d, ch=1, level=127)\n", part1PatchValue);
+    std::vector<uint8_t> part1(35, 0);
+    part1[21] = 1;                    // receiveswitch on
+    part1[22] = 0;                    // receivechannel 1 (0-indexed)
+    part1[23] = (part1PatchValue >> 4) & 0x7F; // patchnumber MSB nibble
+    part1[24] = part1PatchValue & 0x0F;        // patchnumber LSB nibble
+    part1[25] = 127;                  // partlevel
+    part1[26] = 64;                   // partpan centre
+    part1[29] = 1;                    // reverbswitch
+    part1[30] = 1;                    // chorusswitch
+    sendDT1(0, 0, 0x18, 0x00, part1);
+    runMs(settleMs);
+
+    std::fprintf(stderr, "[selftest-perf] writing Part 2 (patch=%d, ch=2, level=100)\n", part2PatchValue);
+    std::vector<uint8_t> part2(35, 0);
+    part2[21] = 1;
+    part2[22] = 1;                    // receivechannel 2
+    part2[23] = (part2PatchValue >> 4) & 0x7F;
+    part2[24] = part2PatchValue & 0x0F;
+    part2[25] = 100;
+    part2[26] = 64;
+    part2[29] = 1;
+    part2[30] = 1;
+    sendDT1(0, 0, 0x19, 0x00, part2);
+    runMs(settleMs);
+
+    runMs(2000); // let it settle further
+
+    // Quick audio sanity check: does Part 1 (channel 1) actually make sound with default (all-
+    // zero) voice reserve / Common effects settings, or does an unreserved part stay silent?
+    {
+      uint8_t noteOn[3] = { 0x90, 60, 100 };
+      mcu->postMidiSC55(noteOn, 3);
+      float peakL = 0, peakR = 0;
+      double sumSq = 0;
+      int totalFrames = sampleRate * 1; // 1 second
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++) {
+          peakL = std::max(peakL, std::abs(l[i]));
+          peakR = std::max(peakR, std::abs(r[i]));
+          sumSq += (double)l[i] * l[i] + (double)r[i] * r[i];
+        }
+        done += (int)blockFrames;
+      }
+      uint8_t noteOff[3] = { 0x80, 60, 0 };
+      mcu->postMidiSC55(noteOff, 3);
+      double rms = std::sqrt(sumSq / (2.0 * totalFrames));
+      std::fprintf(stderr, "[selftest-perf] audio check: note on ch1, 1s render: peakL=%.4f peakR=%.4f rms=%.6f\n", peakL, peakR, rms);
+    }
+
+    // Verify the bank hypothesis: search for the ROM's own "Internal A" patch #1 name and
+    // "Internal B" patch #1 name (12 bytes each, straight from ROM2 - same offsets the
+    // constructor's own patchInfos[] loop uses) anywhere in RAM, which would mean the firmware
+    // actually loaded that factory patch into Part 1 / Part 2's working Tone Temp mirror.
+    const char *romName1 = (const char *)&loadedRoms[getRomIndex("jv880_rom2.bin")][0x010ce0];
+    const char *romName2 = (const char *)&loadedRoms[getRomIndex("jv880_rom2.bin")][0x018ce0];
+    const char *romNameUser = (const char *)&loadedRoms[getRomIndex("jv880_rom2.bin")][0x008ce0];
+    std::fprintf(stderr, "[selftest-perf] Internal A patch#1 name in ROM: \"%.12s\"\n", romName1);
+    std::fprintf(stderr, "[selftest-perf] Internal B patch#1 name in ROM: \"%.12s\"\n", romName2);
+    std::fprintf(stderr, "[selftest-perf] Internal User patch#1 name in ROM: \"%.12s\"\n", romNameUser);
+    auto searchFor12 = [&](const char *label, const char *needle) {
+      bool found = false;
+      for (size_t i = 0; i + 12 <= sizeof(mcu->sram); i++) {
+        if (std::memcmp(&mcu->sram[i], needle, 12) == 0) {
+          std::fprintf(stderr, "[selftest-perf] FOUND %s at sram offset 0x%04zx\n", label, i);
+          found = true;
+        }
+      }
+      if (!found)
+        std::fprintf(stderr, "[selftest-perf] %s NOT found in sram\n", label);
+    };
+    searchFor12("Internal A patch#1 name", romName1);
+    searchFor12("Internal B patch#1 name", romName2);
+    searchFor12("Internal User patch#1 name", romNameUser);
+
+    if (auto *f = std::fopen("/tmp/jv880_nvram_perf.bin", "wb")) {
+      std::fwrite(mcu->nvram, 1, sizeof(mcu->nvram), f);
+      std::fclose(f);
+    }
+    if (auto *f = std::fopen("/tmp/jv880_sram_perf.bin", "wb")) {
+      std::fwrite(mcu->sram, 1, sizeof(mcu->sram), f);
+      std::fclose(f);
+    }
+
+    auto searchRegion = [&](const char *label, const uint8_t *base, size_t size) {
+      bool found = false;
+      for (size_t i = 0; i + 12 <= size; i++) {
+        if (std::memcmp(base + i, marker, 12) == 0) {
+          std::fprintf(stderr, "[selftest-perf] FOUND marker \"%s\" in %s at offset 0x%04zx\n", marker, label, i);
+          found = true;
+        }
+      }
+      return found;
+    };
+    bool foundMarker = false;
+    foundMarker |= searchRegion("nvram", mcu->nvram, sizeof(mcu->nvram));
+    foundMarker |= searchRegion("sram", mcu->sram, sizeof(mcu->sram));
+    foundMarker |= searchRegion("ram", mcu->ram, sizeof(mcu->ram));
+    foundMarker |= searchRegion("cardram", mcu->cardram, sizeof(mcu->cardram));
+    if (!foundMarker)
+      std::fprintf(stderr, "[selftest-perf] marker NOT found in nvram/sram/ram/cardram\n");
+
+    // Look for Part 1's distinctive byte-21..30 run (receiveswitch, receivechannel, patch MSB/
+    // LSB nibbles, level, pan, coarse/fine tune, reverbswitch, chorusswitch) to pin the exact
+    // in-RAM stride between Common and Part 1, and each part's own size.
+    const uint8_t part1Pattern[10] = { 1, 0, 0, 5, 0x7F, 0x40, 0, 0, 1, 1 };
+    for (size_t i = 0; i + 10 <= sizeof(mcu->sram); i++) {
+      if (std::memcmp(&mcu->sram[i], part1Pattern, 10) == 0)
+        std::fprintf(stderr, "[selftest-perf] FOUND part1 byte21..30 pattern in sram at offset 0x%04zx (part base ~0x%04zx)\n", i, i - 21);
+    }
+    const uint8_t part2Pattern[10] = { 1, 1, (70 >> 4) & 0x7F, 70 & 0x0F, 100, 0x40, 0, 0, 1, 1 };
+    for (size_t i = 0; i + 10 <= sizeof(mcu->sram); i++) {
+      if (std::memcmp(&mcu->sram[i], part2Pattern, 10) == 0)
+        std::fprintf(stderr, "[selftest-perf] FOUND part2 byte21..30 pattern in sram at offset 0x%04zx (part base ~0x%04zx)\n", i, i - 21);
+    }
+
+    std::fprintf(stderr, "[selftest-perf] nvram[0x11] (patch/perform mode byte) = %02x\n", mcu->nvram[0x11]);
+
+    // Dump the firmware's own rendered LCD screen as a PNG - the strongest possible check that
+    // Performance mode and our injected data actually took, since it's literally what the
+    // firmware itself chose to display. No window/audio device needed: LCD_Update() just returns
+    // its offscreen pixel buffer, same call LCDisplay::paint() makes from the message thread.
+    if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+      for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+      juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+      juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+      for (int y = 0; y < pixelMap.height; y++)
+        std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+      juce::PNGImageFormat png;
+      juce::File outFile("/tmp/jv880_lcd_perf.png");
+      juce::FileOutputStream stream(outFile);
+      if (stream.openedOk()) {
+        stream.setPosition(0);
+        stream.truncate();
+        png.writeImageToStream(image, stream);
+        std::fprintf(stderr, "[selftest-perf] wrote LCD screenshot to /tmp/jv880_lcd_perf.png\n");
+      }
+    }
+
+    std::fprintf(stderr, "[selftest-perf] done, exiting\n");
     std::exit(0);
   }
 
@@ -325,19 +521,114 @@ VirtualJVProcessor::VirtualJVProcessor()
   refreshUserPatches();
   refreshPerformanceBank();
 
+  performanceParts[kNumPerformanceParts - 1].isRhythm = true;
+
   loaded = true;
 
   loadPerformanceSessionState();
+
+  // Headless validation for the shipped Performance mode v2 API (sendPatchToPerformancePart(),
+  // setPerformanceModeEnabled(), etc.) - as opposed to JV880_SELFTEST_PERF above, which only
+  // exercised raw DT1 messages to find the address map in the first place. Same technique: drive
+  // the emulator directly, no audio device or window needed, dump the firmware's own rendered
+  // LCD screen as a PNG - see CLAUDE.md's "Mode Performance" section.
+  if (std::getenv("JV880_SELFTEST_PERF2")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+
+    std::fprintf(stderr, "[selftest-perf2] booting 2000 ms...\n");
+    runMs(2000);
+
+    setPerformanceName("MyBand");
+    sendPatchToPerformancePart(0, 0);   // Internal A #1 -> Part 1
+    setPerformancePartParams(0, 1, 127, 64, true);
+    sendPatchToPerformancePart(64, 1);  // Internal B #1 -> Part 2
+    setPerformancePartParams(1, 2, 100, 64, true);
+    sendPatchToPerformancePart(192, 7); // Rhythm Set Int A -> Part 8 (Rhythm)
+    setPerformancePartParams(7, 10, 110, 64, true);
+
+    std::fprintf(stderr, "[selftest-perf2] enabling Performance mode\n");
+    setPerformanceModeEnabled(true);
+    runMs(1500);
+
+    // Audio check: note on channel 1 (Part 1) and channel 2 (Part 2) simultaneously - both
+    // should be audible together through the single engine.
+    {
+      uint8_t note1On[3] = {0x90, 60, 100};
+      uint8_t note2On[3] = {0x91, 64, 100};
+      mcu->postMidiSC55(note1On, 3);
+      mcu->postMidiSC55(note2On, 3);
+      float peakL = 0, peakR = 0;
+      int totalFrames = sampleRate;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++) {
+          peakL = std::max(peakL, std::abs(l[i]));
+          peakR = std::max(peakR, std::abs(r[i]));
+        }
+        done += (int)blockFrames;
+      }
+      std::fprintf(stderr, "[selftest-perf2] audio check (Part1 ch1 + Part2 ch2 together): peakL=%.4f peakR=%.4f\n", peakL, peakR);
+    }
+
+    if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+      for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+      juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+      juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+      for (int y = 0; y < pixelMap.height; y++)
+        std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+      juce::PNGImageFormat png;
+      juce::File outFile("/tmp/jv880_lcd_perf2.png");
+      juce::FileOutputStream stream(outFile);
+      if (stream.openedOk()) {
+        stream.setPosition(0);
+        stream.truncate();
+        png.writeImageToStream(image, stream);
+        std::fprintf(stderr, "[selftest-perf2] wrote LCD screenshot to /tmp/jv880_lcd_perf2.png\n");
+      }
+    }
+
+    std::fprintf(stderr, "[selftest-perf2] disabling Performance mode\n");
+    setPerformanceModeEnabled(false);
+    std::fprintf(stderr, "[selftest-perf2] nvram[0x11] right after disable = %02x\n", mcu->nvram[0x11]);
+    runMs(3000);
+    std::fprintf(stderr, "[selftest-perf2] nvram[0x11] after 3s settle = %02x\n", mcu->nvram[0x11]);
+    if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+      for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+      juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+      juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+      for (int y = 0; y < pixelMap.height; y++)
+        std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+      juce::PNGImageFormat png;
+      juce::File outFile("/tmp/jv880_lcd_backtopatch.png");
+      juce::FileOutputStream stream(outFile);
+      if (stream.openedOk()) {
+        stream.setPosition(0);
+        stream.truncate();
+        png.writeImageToStream(image, stream);
+        std::fprintf(stderr, "[selftest-perf2] wrote back-to-Patch LCD screenshot to /tmp/jv880_lcd_backtopatch.png\n");
+      }
+    }
+
+    std::fprintf(stderr, "[selftest-perf2] done, exiting\n");
+    std::exit(0);
+  }
 }
 
 VirtualJVProcessor::~VirtualJVProcessor() {
   mcuLock.enter();
   delete mcu;
-  // perfEngines are unique_ptrs - reset explicitly inside the same locked block rather than
-  // relying on implicit member teardown after this destructor body returns (which would run
-  // after mcuLock has already been released), matching the defensive posture around `mcu` above.
-  for (auto &engine : perfEngines)
-    engine.reset();
   mcuLock.exit();
 }
 
@@ -619,131 +910,184 @@ void VirtualJVProcessor::refreshUserPatches() {
 }
 
 namespace {
-constexpr size_t kPerfSlotNameBytes = sizeof(VirtualJVProcessor::PerformanceSlot{}.name);
-// marker(1) + expansionI(1) + name + midiChannel(1) + level(1) + pan(1) + enabled(1) + raw(0xa7c)
-constexpr size_t kPerfSlotRecordBytes = 1 + 1 + kPerfSlotNameBytes + 1 + 1 + 1 + 1 + 0xa7c;
+// See PerformancePart's own comment (PluginProcessor.h) for what this covers and why: only the
+// 195 ROM-native factory tones/rhythm-sets (patchInfos[] index 0..194) map onto a real Patch
+// Memory bank/number the firmware can actually reference from a Performance Part. Confirmed
+// empirically (LCD screenshot + RAM search naming the right factory patch - see CLAUDE.md):
+// patchInfos[] 0..63 ("Internal A" in this project's own Browse-tab naming) IS the firmware's
+// real read-only Preset A bank; 64..127 ("Internal B") is Preset B; 128..191 ("Internal User",
+// despite the name - it's ROM-sourced like the other two) is the real writable Internal bank's
+// factory-default content; 192/193/194 are the matching Rhythm Set for each of those 3 banks.
+bool performancePatchMapping(int patchInfoIndex, uint8_t &bank, uint8_t &number, bool &isRhythm) {
+  if (patchInfoIndex >= 0 && patchInfoIndex < 192) {
+    const int group = patchInfoIndex / 64; // 0 = Internal A/Preset A, 1 = Internal B/Preset B, 2 = Internal User/real Internal
+    bank = group == 0 ? 2 : group == 1 ? 3 : 0;
+    number = (uint8_t)(patchInfoIndex % 64);
+    isRhythm = false;
+    return true;
+  }
+  if (patchInfoIndex == 192) { bank = 2; number = 0; isRhythm = true; return true; }
+  if (patchInfoIndex == 193) { bank = 3; number = 0; isRhythm = true; return true; }
+  if (patchInfoIndex == 194) { bank = 0; number = 0; isRhythm = true; return true; }
+  return false;
+}
+
+constexpr size_t kPerfPartNameBytes = sizeof(VirtualJVProcessor::PerformancePart{}.name);
+// present(1) + isRhythm(1) + bank(1) + number(1) + name + midiChannel(1) + level(1) + pan(1) + enabled(1)
+constexpr size_t kPerfPartRecordBytes = 4 + kPerfPartNameBytes + 4;
+constexpr size_t kPerfNameBytes = 12; // matches the firmware's own Common name field width
 
 // Shared by the "Save As..." bank format and the session-restore file - both serialize the same
-// 4 PerformanceSlots, just under different filenames/directories (see performancesDir() vs
-// performanceSessionFile()).
-void appendPerformanceSlots(juce::MemoryBlock &block,
-                             const VirtualJVProcessor::PerformanceSlot (&slots)[4]) {
-  for (auto &slot : slots) {
-    uint8_t marker = !slot.present ? 2 : (slot.isDrums ? 1 : 0);
-    block.append(&marker, 1);
+// performance name + 8 PerformanceParts, just under different filenames/directories (see
+// performancesDir() vs performanceSessionFile()).
+void appendPerformanceParts(
+    juce::MemoryBlock &block, const char (&name)[13],
+    const VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts]) {
+  block.append(name, kPerfNameBytes);
 
-    uint8_t expansionByte = slot.expansionI;
-    block.append(&expansionByte, 1);
+  for (auto &part : parts) {
+    uint8_t present = part.present ? 1 : 0;
+    block.append(&present, 1);
+    uint8_t isRhythm = part.isRhythm ? 1 : 0;
+    block.append(&isRhythm, 1);
+    block.append(&part.bank, 1);
+    block.append(&part.number, 1);
 
-    char nameBuf[kPerfSlotNameBytes] = {0};
-    memcpy(nameBuf, slot.name, sizeof(nameBuf));
+    char nameBuf[kPerfPartNameBytes] = {0};
+    memcpy(nameBuf, part.name, sizeof(nameBuf));
     block.append(nameBuf, sizeof(nameBuf));
 
-    uint8_t ch = (uint8_t)slot.midiChannel;
+    uint8_t ch = (uint8_t)part.midiChannel;
     block.append(&ch, 1);
-    uint8_t lvl = (uint8_t)slot.level;
+    uint8_t lvl = (uint8_t)part.level;
     block.append(&lvl, 1);
-    int8_t pan = (int8_t)slot.pan;
+    uint8_t pan = (uint8_t)part.pan;
     block.append(&pan, 1);
-    uint8_t en = slot.enabled ? 1 : 0;
+    uint8_t en = part.enabled ? 1 : 0;
     block.append(&en, 1);
-
-    block.append(slot.raw, sizeof(slot.raw));
   }
 }
 
-// Returns false (leaving `slots` untouched) if `size` doesn't match 4 records exactly - a file
-// this build didn't write, or written by a since-changed format.
-bool readPerformanceSlots(const uint8_t *bytes, size_t size,
-                           VirtualJVProcessor::PerformanceSlot (&slots)[4]) {
-  if (size != 4 * kPerfSlotRecordBytes)
+// Returns false (leaving `name`/`parts` untouched) if `size` doesn't match exactly - a file this
+// build didn't write, or written by a since-changed format.
+bool readPerformanceParts(
+    const uint8_t *bytes, size_t size, char (&name)[13],
+    VirtualJVProcessor::PerformancePart (&parts)[VirtualJVProcessor::kNumPerformanceParts]) {
+  if (size != kPerfNameBytes + VirtualJVProcessor::kNumPerformanceParts * kPerfPartRecordBytes)
     return false;
 
-  size_t offset = 0;
-  for (int i = 0; i < 4; i++) {
-    auto &slot = slots[i];
+  memcpy(name, bytes, kPerfNameBytes);
+  name[kPerfNameBytes] = '\0';
+  size_t offset = kPerfNameBytes;
 
-    uint8_t marker = bytes[offset]; offset += 1;
-    uint8_t expansionByte = bytes[offset]; offset += 1;
-    const char *nameBytes = (const char *)(bytes + offset); offset += kPerfSlotNameBytes;
+  for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++) {
+    auto &part = parts[i];
+
+    uint8_t present = bytes[offset]; offset += 1;
+    uint8_t isRhythm = bytes[offset]; offset += 1;
+    uint8_t bank = bytes[offset]; offset += 1;
+    uint8_t number = bytes[offset]; offset += 1;
+    const char *nameBytes = (const char *)(bytes + offset); offset += kPerfPartNameBytes;
     uint8_t ch = bytes[offset]; offset += 1;
     uint8_t lvl = bytes[offset]; offset += 1;
-    int8_t pan = (int8_t)bytes[offset]; offset += 1;
+    uint8_t pan = bytes[offset]; offset += 1;
     uint8_t en = bytes[offset]; offset += 1;
-    const uint8_t *raw = bytes + offset; offset += 0xa7c;
 
-    slot.present = marker != 2;
-    slot.isDrums = marker == 1;
-    slot.expansionI = expansionByte;
-    memcpy(slot.name, nameBytes, sizeof(slot.name));
-    slot.name[sizeof(slot.name) - 1] = '\0'; // defensive against a corrupt/foreign file
-    slot.midiChannel = ch;
-    slot.level = lvl;
-    slot.pan = pan;
-    slot.enabled = en != 0;
-    memcpy(slot.raw, raw, sizeof(slot.raw));
+    part.present = present != 0;
+    part.isRhythm = isRhythm != 0;
+    part.bank = bank;
+    part.number = number;
+    memcpy(part.name, nameBytes, sizeof(part.name));
+    part.name[sizeof(part.name) - 1] = '\0'; // defensive against a corrupt/foreign file
+    part.midiChannel = ch;
+    part.level = lvl;
+    part.pan = pan;
+    part.enabled = en != 0;
   }
   return true;
 }
 } // namespace
 
-// Loads one Performance slot's cached raw bytes into its engine via the exact same direct-
-// NVRAM-poke + SC55_Reset() mechanism setCurrentProgram() already uses for the main single-
-// patch engine. Callers must already hold mcuLock and have already checked the target engine
-// exists (SpinLock isn't reentrant) - only called from within Performance-mode code paths.
-void VirtualJVProcessor::loadPerformanceSlotIntoEngine(int slotIndex) {
-  auto &slot = performanceSlots[slotIndex];
-  auto *engine = perfEngines[slotIndex].get();
-  if (engine == nullptr || !slot.present)
-    return;
-
-  if (slot.expansionI != 0xff && slot.expansionI < NUM_EXPS
-      && expansionsDescr[slot.expansionI] != nullptr) {
-    memcpy(engine->pcm.waverom_exp, expansionsDescr[slot.expansionI], 0x800000);
-  }
-
-  if (slot.isDrums) {
-    engine->nvram[0x11] = 0;
-    memcpy(&engine->nvram[0x67f0], slot.raw, 0xa7c);
-  } else {
-    engine->nvram[0x11] = 1;
-    memcpy(&engine->nvram[0x0d70], slot.raw, 0x16a);
-  }
-
-  engine->SC55_Reset();
+bool VirtualJVProcessor::isEligibleForPerformancePart(int patchInfoIndex) const {
+  uint8_t bank, number;
+  bool isRhythm;
+  return performancePatchMapping(patchInfoIndex, bank, number, isRhythm);
 }
 
-void VirtualJVProcessor::sendPatchToPerformanceSlot(int patchInfoIndex, int slotIndex) {
-  if (!loaded || patchInfoIndex < 0 || patchInfoIndex >= romPatchCapacity + userPatchCapacity
-      || !patchInfos[patchInfoIndex].present || slotIndex < 0 || slotIndex >= 4)
+// Pushes the Performance Common record (name + effects + voice reserve) to the single `mcu`
+// engine over SysEx DT1, address 00 00 10 00 ("Temporary Performance", common). Caller must
+// already hold mcuLock. Effects/voice-reserve fields are left at 0 for now (confirmed by an
+// audio render test, see CLAUDE.md, that an unreserved Part still plays - voice reserve only
+// affects priority under voice contention) - a future UI pass can expose them.
+void VirtualJVProcessor::pushPerformanceCommonToEngine() {
+  std::vector<uint8_t> common(31, 0);
+  memcpy(common.data(), performanceName, kPerfNameBytes);
+  sendSysexBlock(0x10u << 7, common.data(), common.size());
+}
+
+// Pushes one Part's 35-byte record to the single `mcu` engine over SysEx DT1, address
+// 00 00 1n 00 where n = 8+partIndex (see the partOffsets table, matching Edisyn's own
+// RolandJV880MultiRec.partOffsets). Caller must already hold mcuLock.
+void VirtualJVProcessor::pushPerformancePartToEngine(int partIndex) {
+  if (partIndex < 0 || partIndex >= kNumPerformanceParts)
+    return;
+
+  auto &part = performanceParts[partIndex];
+
+  std::vector<uint8_t> data(35, 0);
+  // Indices below match RolandJV880Multi.java's own allToneParameters ordering exactly - see
+  // PerformancePart's comment in PluginProcessor.h for the full field list.
+  data[21] = (part.present && part.enabled) ? 1 : 0; // receiveswitch
+  data[22] = (uint8_t)juce::jlimit(0, 15, part.midiChannel - 1); // receivechannel, 0-indexed
+  const uint8_t patchValue = part.present ? (uint8_t)(part.bank * 64 + part.number) : 0;
+  data[23] = (patchValue >> 4) & 0x7F; // patchnumber MSB nibble
+  data[24] = patchValue & 0x0F;        // patchnumber LSB nibble
+  data[25] = (uint8_t)juce::jlimit(0, 127, part.level); // partlevel
+  data[26] = (uint8_t)juce::jlimit(0, 127, part.pan);   // partpan
+  data[27] = 64; // partcoarsetune, centre
+  data[28] = 64; // partfinetune, centre
+  data[29] = 1;  // reverbswitch - onto the Performance's shared reverb bus
+  data[30] = 1;  // chorusswitch - ditto
+
+  static constexpr uint8_t partOffsets[VirtualJVProcessor::kNumPerformanceParts] = {
+      0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+  const uint32_t address = (uint32_t)(0x10 + partOffsets[partIndex]) << 7;
+  sendSysexBlock(address, data.data(), data.size());
+}
+
+void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int partIndex) {
+  if (!loaded || partIndex < 0 || partIndex >= kNumPerformanceParts)
+    return;
+  if (patchInfoIndex < 0 || patchInfoIndex >= romPatchCapacity + userPatchCapacity
+      || !patchInfos[patchInfoIndex].present)
+    return;
+
+  uint8_t bank, number;
+  bool isRhythm;
+  if (!performancePatchMapping(patchInfoIndex, bank, number, isRhythm))
+    return; // Card/expansion-ROM or User-saved patch - not addressable as a Patch Memory slot yet
+
+  // Part 8 is fixed to Rhythm on real hardware, Parts 1-7 fixed to tone - reject a mismatch
+  // rather than silently mis-configuring the Part.
+  const bool wantsRhythmPart = (partIndex == kNumPerformanceParts - 1);
+  if (isRhythm != wantsRhythmPart)
     return;
 
   auto &info = patchInfos[patchInfoIndex];
-  auto &slot = performanceSlots[slotIndex];
+  auto &part = performanceParts[partIndex];
+
+  part.present = true;
+  part.isRhythm = isRhythm;
+  part.bank = bank;
+  part.number = number;
+
+  const int n = std::min(info.nameLength, (int)sizeof(part.name) - 1);
+  memcpy(part.name, info.name, (size_t)n);
+  part.name[n] = '\0';
 
   mcuLock.enter();
-
-  slot.isDrums = info.drums;
-  slot.expansionI = (uint8_t)juce::jlimit(0, 0xff, info.expansionI);
-
-  // Mirrors setCurrentProgram()'s own branch exactly (PatchInfo::ptr is only ever populated for
-  // rhythm entries - tone entries carry their raw bytes via ::name instead, whose first 12 bytes
-  // double as the embedded Patch name).
-  const uint8_t *src = info.drums ? (const uint8_t *)info.ptr : (const uint8_t *)info.name;
-  memcpy(slot.raw, src, info.drums ? 0xa7c : 0x16a);
-
-  // Clamped, not a raw memcpy of info.nameLength: the 3 built-in ROM rhythm entries
-  // (see the constructor above) hardcode nameLength=21 regardless of their actual shorter
-  // string length, which would overflow slot.name's fixed 13 bytes otherwise.
-  const int n = std::min(info.nameLength, (int)sizeof(slot.name) - 1);
-  memcpy(slot.name, info.name, (size_t)n);
-  slot.name[n] = '\0';
-
-  slot.present = true;
-
   if (performanceModeEnabled)
-    loadPerformanceSlotIntoEngine(slotIndex);
-
+    pushPerformancePartToEngine(partIndex);
   mcuLock.exit();
 
   savePerformanceSessionState();
@@ -753,12 +1097,16 @@ void VirtualJVProcessor::sendPatchToPerformanceSlot(int patchInfoIndex, int slot
       e->updatePerformanceTab();
 }
 
-void VirtualJVProcessor::clearPerformanceSlot(int slotIndex) {
-  if (slotIndex < 0 || slotIndex >= 4)
+void VirtualJVProcessor::clearPerformancePart(int partIndex) {
+  if (partIndex < 0 || partIndex >= kNumPerformanceParts)
     return;
+
+  performanceParts[partIndex] = PerformancePart();
+  performanceParts[partIndex].isRhythm = (partIndex == kNumPerformanceParts - 1);
 
   mcuLock.enter();
-  performanceSlots[slotIndex] = PerformanceSlot();
+  if (performanceModeEnabled)
+    pushPerformancePartToEngine(partIndex);
   mcuLock.exit();
 
   savePerformanceSessionState();
@@ -768,16 +1116,37 @@ void VirtualJVProcessor::clearPerformanceSlot(int slotIndex) {
       e->updatePerformanceTab();
 }
 
-void VirtualJVProcessor::setPerformanceSlotParams(int slotIndex, int midiChannel, int level,
-                                                    int pan, bool enabled) {
-  if (slotIndex < 0 || slotIndex >= 4)
+void VirtualJVProcessor::setPerformancePartParams(int partIndex, int midiChannel, int level,
+                                                   int pan, bool enabled) {
+  if (partIndex < 0 || partIndex >= kNumPerformanceParts)
     return;
 
-  auto &slot = performanceSlots[slotIndex];
-  slot.midiChannel = juce::jlimit(0, 16, midiChannel);
-  slot.level = juce::jlimit(0, 127, level);
-  slot.pan = juce::jlimit(-64, 63, pan);
-  slot.enabled = enabled;
+  auto &part = performanceParts[partIndex];
+  part.midiChannel = juce::jlimit(1, 16, midiChannel);
+  part.level = juce::jlimit(0, 127, level);
+  part.pan = juce::jlimit(0, 127, pan);
+  part.enabled = enabled;
+
+  mcuLock.enter();
+  if (performanceModeEnabled)
+    pushPerformancePartToEngine(partIndex);
+  mcuLock.exit();
+
+  savePerformanceSessionState();
+}
+
+void VirtualJVProcessor::setPerformanceName(const juce::String &name) {
+  auto padded = name + "            ";
+  for (int i = 0; i < 12; i++) {
+    auto c = padded[i];
+    performanceName[i] = (char)((c < 32 || c > 127) ? ' ' : (char)c);
+  }
+  performanceName[12] = '\0';
+
+  mcuLock.enter();
+  if (performanceModeEnabled)
+    pushPerformanceCommonToEngine();
+  mcuLock.exit();
 
   savePerformanceSessionState();
 }
@@ -788,20 +1157,19 @@ void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
 
   mcuLock.enter();
 
-  // Lazily built the first time Performance mode is actually engaged - ~20MB/engine (waveroms +
-  // LCD buffers), no reason to pay that for users who never touch this tab.
-  if (enabled && perfEngines[0] == nullptr) {
-    for (auto &engine : perfEngines) {
-      engine = std::make_unique<MCU>();
-      engine->startSC55(loadedRoms[getRomIndex("jv880_rom1.bin")],
-                         loadedRoms[getRomIndex("jv880_rom2.bin")],
-                         loadedRoms[getRomIndex("jv880_waverom1.bin")],
-                         loadedRoms[getRomIndex("jv880_waverom2.bin")],
-                         loadedRoms[getRomIndex("jv880_nvram.bin")]);
-    }
+  // System Area offset 0 = the real PATCH/PERFORM front-panel button's own state (0 =
+  // Performance, 1 = Patch) - confirmed empirically (LCD screenshot + nvram[0x11] flipping
+  // exactly as a simulated physical button press does - see CLAUDE.md). Flipping it over SysEx
+  // does exactly what pressing the button does, on the SAME single `mcu` engine Patch mode
+  // already uses - no parallel engines, no extra CPU cost versus Patch mode regardless of how
+  // many of the 8 Parts are active.
+  uint8_t modeByte = enabled ? 0 : 1;
+  sendSysexBlock(0, &modeByte, 1);
 
-    for (int i = 0; i < 4; ++i)
-      loadPerformanceSlotIntoEngine(i);
+  if (enabled) {
+    pushPerformanceCommonToEngine();
+    for (int i = 0; i < kNumPerformanceParts; ++i)
+      pushPerformancePartToEngine(i);
   }
 
   performanceModeEnabled = enabled;
@@ -823,10 +1191,7 @@ juce::File VirtualJVProcessor::performancesDir() {
 
 bool VirtualJVProcessor::savePerformanceAs(const juce::File &file) {
   juce::MemoryBlock block;
-
-  mcuLock.enter();
-  appendPerformanceSlots(block, performanceSlots);
-  mcuLock.exit();
+  appendPerformanceParts(block, performanceName, performanceParts);
 
   file.getParentDirectory().createDirectory();
   if (!file.replaceWithData(block.getData(), block.getSize()))
@@ -848,7 +1213,7 @@ void VirtualJVProcessor::refreshPerformanceBank() {
   files.sort();
 
   for (auto &file : files) {
-    if (file.getSize() != (int64_t)(4 * kPerfSlotRecordBytes))
+    if (file.getSize() != (int64_t)(kPerfNameBytes + kNumPerformanceParts * kPerfPartRecordBytes))
       continue; // not a file this build wrote (wrong size) - skip rather than risk misreading it
 
     performanceBank.push_back({file.getFileNameWithoutExtension(), file});
@@ -863,16 +1228,16 @@ void VirtualJVProcessor::loadPerformance(int bankIndex) {
   if (!performanceBank[bankIndex].file.loadFileAsData(block))
     return;
 
+  if (!readPerformanceParts(static_cast<const uint8_t *>(block.getData()), block.getSize(),
+                             performanceName, performanceParts))
+    return;
+
   mcuLock.enter();
-
-  if (readPerformanceSlots(static_cast<const uint8_t *>(block.getData()), block.getSize(),
-                            performanceSlots)) {
-    if (performanceModeEnabled)
-      for (int i = 0; i < 4; ++i)
-        if (performanceSlots[i].present)
-          loadPerformanceSlotIntoEngine(i);
+  if (performanceModeEnabled) {
+    pushPerformanceCommonToEngine();
+    for (int i = 0; i < kNumPerformanceParts; ++i)
+      pushPerformancePartToEngine(i);
   }
-
   mcuLock.exit();
 
   savePerformanceSessionState();
@@ -892,15 +1257,15 @@ void VirtualJVProcessor::savePerformanceSessionState() {
   juce::MemoryBlock block;
   uint8_t modeByte = performanceModeEnabled ? 1 : 0;
   block.append(&modeByte, 1);
-  appendPerformanceSlots(block, performanceSlots);
+  appendPerformanceParts(block, performanceName, performanceParts);
 
   auto file = performanceSessionFile();
   file.getParentDirectory().createDirectory();
   file.replaceWithData(block.getData(), block.getSize());
 }
 
-// Called once at construction, after refreshPerformanceBank() - restores the 4 in-progress
-// slots and whether Performance mode was on, so closing and reopening the plugin/app picks up
+// Called once at construction, after refreshPerformanceBank() - restores the 8 in-progress
+// parts and whether Performance mode was on, so closing and reopening the plugin/app picks up
 // right where it left off (Alan's request, 2026-09-07). Deliberately separate from the Bank
 // (performancesDir()) - this file is never listed there.
 void VirtualJVProcessor::loadPerformanceSessionState() {
@@ -915,11 +1280,11 @@ void VirtualJVProcessor::loadPerformanceSessionState() {
   const auto *bytes = static_cast<const uint8_t *>(block.getData());
   const bool wantEnabled = bytes[0] != 0;
 
-  if (!readPerformanceSlots(bytes + 1, block.getSize() - 1, performanceSlots))
+  if (!readPerformanceParts(bytes + 1, block.getSize() - 1, performanceName, performanceParts))
     return;
 
   if (wantEnabled)
-    setPerformanceModeEnabled(true); // lazily builds/loads perfEngines from the slots just read
+    setPerformanceModeEnabled(true); // pushes Common + all 8 Parts to the engine from the state just read
 }
 
 const juce::String VirtualJVProcessor::getProgramName(int index) {
@@ -939,9 +1304,6 @@ void VirtualJVProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
   keyboardCollector.reset(sampleRate);
 
-  for (auto &scratch : perfScratch)
-    scratch.setSize(2, samplesPerBlock);
-
   dspLoadMeasurer.reset(sampleRate, samplesPerBlock);
 }
 
@@ -960,9 +1322,11 @@ bool VirtualJVProcessor::isBusesLayoutSupported(
 
 void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::MidiBuffer &midiMessages)
 {
-  // Spans the whole block (MIDI handling + the actual DSP below) - covers Patch mode's single
-  // engine and Performance mode's up to 4 engines alike, same convention as any other JUCE
-  // plugin's CPU meter. Read from SettingsTab via dspLoadMeasurer.getLoadAsPercentage().
+  // Spans the whole block (MIDI handling + the actual DSP below) - Patch mode and Performance
+  // mode alike now share the same single `mcu` engine (Performance mode v2 - see
+  // PerformancePart's own comment in PluginProcessor.h), so this is a flat cost either way, same
+  // convention as any other JUCE plugin's CPU meter. Read from SettingsTab via
+  // dspLoadMeasurer.getLoadAsPercentage().
   juce::AudioProcessLoadMeasurer::ScopedTimer loadTimer(dspLoadMeasurer, buffer.getNumSamples());
 
   // The on-screen VirtualKeyboard's notes, queued by injectTestNote() - merged in exactly the
@@ -1002,69 +1366,27 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
   const int numSamples = buffer.getNumSamples();
 
-  if (performanceModeEnabled)
+  for (const auto metadata : midiMessages)
   {
-    // Mutually exclusive with the single-Patch engine below, same as the real hardware's own
-    // PATCH/PERFORM button - the idle `mcu` isn't touched at all while this is active.
-    buffer.clear();
+    auto message = metadata.getMessage();
 
-    for (int slotI = 0; slotI < 4; ++slotI)
-    {
-      auto &slot = performanceSlots[slotI];
-      if (!slot.present || !slot.enabled || perfEngines[slotI] == nullptr)
-        continue;
-
-      auto *engine = perfEngines[slotI].get();
-
-      for (const auto metadata : midiMessages)
-      {
-        auto message = metadata.getMessage();
-
-        // Original incoming channel, before any remap - 0 means "respond to everything",
-        // matching a real Performance Part's receive-channel behaviour closely enough for a
-        // layered "fat sound" out of the box, while still allowing a per-slot split.
-        if (slot.midiChannel != 0 && message.getChannel() != slot.midiChannel)
-          continue;
-
-        message.setChannel(slot.isDrums ? 10 : 1);
-
-        int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
-
-        engine->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
-      }
-
-      float *scratchL = perfScratch[slotI].getWritePointer(0);
-      float *scratchR = perfScratch[slotI].getWritePointer(1);
-      engine->updateSC55WithSampleRate(scratchL, scratchR, numSamples, (int)getSampleRate());
-
-      // Simple linear pan/level, same convention as the plugin's own linear Master Volume
-      // (SettingsTab) - no equal-power precedent exists elsewhere in this codebase to match.
-      const float leftGain = juce::jlimit(0.0f, 1.0f, 1.0f - (float)juce::jmax(0, slot.pan) / 63.0f);
-      const float rightGain = juce::jlimit(0.0f, 1.0f, 1.0f + (float)juce::jmin(0, slot.pan) / 64.0f);
-      const float gain = (slot.level / 127.0f) * kPerformanceModeGain;
-
-      buffer.addFrom(0, 0, perfScratch[slotI], 0, 0, numSamples, leftGain * gain);
-      buffer.addFrom(1, 0, perfScratch[slotI], 1, 0, numSamples, rightGain * gain);
-    }
-  }
-  else
-  {
-    for (const auto metadata : midiMessages)
-    {
-      auto message = metadata.getMessage();
-
+    // Patch mode always answers on a single fixed channel (matching the current Patch/Rhythm
+    // Temp's own RxCH), same as before. Performance mode forwards each message's real incoming
+    // channel unchanged - the firmware's own 8 Parts (configured over SysEx by
+    // pushPerformancePartToEngine()) each answer their own receivechannel, exactly like a real
+    // JV-880's Performance Play mode routes a multitimbral MIDI cable itself.
+    if (!performanceModeEnabled)
       message.setChannel(status.isDrums ? 10 : 1);
 
-      int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
+    int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
 
-      mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
-    }
-
-    float *channelDataL = buffer.getWritePointer(0);
-    float *channelDataR = buffer.getWritePointer(1);
-
-    mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate());
+    mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
   }
+
+  float *channelDataL = buffer.getWritePointer(0);
+  float *channelDataR = buffer.getWritePointer(1);
+
+  mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate());
 
   mcuLock.exit();
 
@@ -1147,43 +1469,44 @@ void VirtualJVProcessor::setKeyboardPcLayout(int layout) {
   savePersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
 }
 
-void VirtualJVProcessor::sendSysexParamChange(uint32_t address,
-                                                    uint8_t value) {
-  uint8_t data[5];
-  data[0] = (address >> 21) & 127; // address MSB
-  data[1] = (address >> 14) & 127; // address
-  data[2] = (address >> 7) & 127;  // address
-  data[3] = (address >> 0) & 127;  // address LSB
-  data[4] = value;                 // data
+// Roland DT1 ("Data Set 1") send: F0 41 10 46 12 <4x7bit address, MSB first> <data...>
+// <checksum> F7, checksum = (0x80 - (sum(address bytes + data bytes) & 0x7F)) & 0x7F. Same
+// command real hardware/librarians (this project used Sean Luke's Edisyn, see CLAUDE.md, to
+// transcribe the JV-880's own address map) use to write directly into the firmware's temporary
+// or stored memory over MIDI IN - the firmware's own SysEx receiver resolves the address, so the
+// caller never needs to know where a given parameter actually lives in RAM. Caller must already
+// hold mcuLock.
+void VirtualJVProcessor::sendSysexBlock(uint32_t address, const uint8_t *data, size_t length) {
+  uint8_t addrBytes[4] = {
+      (uint8_t)((address >> 21) & 127),
+      (uint8_t)((address >> 14) & 127),
+      (uint8_t)((address >> 7) & 127),
+      (uint8_t)((address >> 0) & 127),
+  };
 
   uint32_t checksum = 0;
+  for (uint8_t b : addrBytes) checksum += b;
+  for (size_t i = 0; i < length; i++) checksum += data[i];
+  checksum = (0x80 - (checksum & 0x7f)) & 0x7f;
 
-  for (size_t i = 0; i < 5; i++) {
-    checksum += data[i];
+  std::vector<uint8_t> buf;
+  buf.reserve(11 + length);
+  buf.push_back(0xf0);
+  buf.push_back(0x41);
+  buf.push_back(0x10); // unit number
+  buf.push_back(0x46); // JV-880 model ID
+  buf.push_back(0x12); // command: DT1
+  for (uint8_t b : addrBytes) buf.push_back(b);
+  for (size_t i = 0; i < length; i++) buf.push_back(data[i]);
+  buf.push_back((uint8_t)checksum);
+  buf.push_back(0xf7);
 
-    if (checksum >= 128) {
-      checksum -= 128;
-    }
-  }
+  mcu->postMidiSC55(buf.data(), (int)buf.size());
+}
 
-  uint8_t buf[12];
-  buf[0] = 0xf0;
-  buf[1] = 0x41;
-  buf[2] = 0x10; // unit number
-  buf[3] = 0x46;
-  buf[4] = 0x12; // command
-
-  checksum = 128 - checksum;
-
-  for (size_t i = 0; i < 5; i++) {
-    buf[i + 5] = data[i];
-  }
-
-  buf[10] = checksum;
-  buf[11] = 0xf7;
-
+void VirtualJVProcessor::sendSysexParamChange(uint32_t address, uint8_t value) {
   mcuLock.enter();
-  mcu->postMidiSC55(buf, 12);
+  sendSysexBlock(address, &value, 1);
   mcuLock.exit();
 }
 

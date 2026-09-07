@@ -149,32 +149,50 @@ public:
     };
 
     //==============================================================================
-    // Performance mode (Alan's request, 2026-09-07): a pragmatic clone of the real JV-880's
-    // multitimbral Performance Play mode, NOT a drive of the real firmware's own (unreverse-
-    // engineered) Performance Temp NVRAM area - see the "Mode Performance" plan for the full
-    // rationale. Each of the 4 slots gets its own fully independent MCU engine (perfEngines
-    // below), loaded via the exact same direct-NVRAM-poke mechanism setCurrentProgram() already
-    // uses for the main single-patch engine, mixed together in processBlock().
-    struct PerformanceSlot
+    // Performance mode v2 (Alan's request, 2026-09-08): drives the JV-880 firmware's OWN native
+    // 8-part Performance Play mode via documented SysEx DT1 writes into the SAME single `mcu`
+    // engine Patch mode uses - no more parallel engines (the previous 4-engine clone described in
+    // CLAUDE.md's "Mode Performance" section, ~4x DSP cost). Address map transcribed from
+    // ~/src/D110/edisyn/edisyn/synth/rolandjv880/RolandJV880Multi.java (Sean Luke's Edisyn,
+    // matching the real JV-880 MIDI implementation) and confirmed empirically (LCD screenshot +
+    // RAM search + audio render - see CLAUDE.md).
+    //
+    // A Performance Part references a factory patch by its real Roland Patch Memory bank/number
+    // (0 = Internal, 2 = Preset A ["Internal A" in this project's own Browse-tab naming], 3 =
+    // Preset B ["Internal B"]) rather than by patchInfos[] index or inline bytes: the real
+    // firmware only ever stores a *reference* into Patch Memory for a Part, never patch data
+    // inline. That covers all 192 ROM-native tone patches and all 3 ROM-native rhythm sets this
+    // project already exposes (patchInfos[] index 0..194 - see performancePatchMapping() in the
+    // .cpp) - Card/expansion-ROM patches and custom-saved .jvp User patches aren't assignable to
+    // a Part yet, since that would additionally require writing them into the real writable
+    // Internal Patch Memory bank over SysEx (a further, not-yet-done step - see CLAUDE.md).
+    struct PerformancePart
     {
-        bool present = false;
-        bool isDrums = false;
-        uint8_t expansionI = 0xff;
-        char name[32] = {0}; // display name, cached at assignment time - see sendPatchToPerformanceSlot()
-        uint8_t raw[0xa7c] = {0}; // holds either the 0x16a Patch or the 0xa7c Rhythm bytes
-        int midiChannel = 0; // 0 = respond to all channels, else 1-16
-        int level = 100;     // 0-127
-        int pan = 0;         // -64..63
-        bool enabled = true;
+        bool present = false;   // false = left at Init Tone, not addressed by sendPatchToPerformancePart()
+        bool isRhythm = false;  // fixed true for part index 7 (the 8th/last part), false otherwise
+        uint8_t bank = 2;       // 0 = Internal, 2 = Preset A, 3 = Preset B (see performancePatchMapping())
+        uint8_t number = 0;     // 0-63
+        char name[16] = {0};    // display name, cached at assignment time
+        int midiChannel = 1;    // 1-16 - real firmware Parts always answer a single channel, no "all"
+        int level = 100;        // 0-127
+        int pan = 64;           // 0-127, 64 = centre (matches the firmware's own partpan field range)
+        bool enabled = true;    // false = receiveswitch off (Part stays configured but silent)
     };
 
-    PerformanceSlot performanceSlots[4];
+    static constexpr int kNumPerformanceParts = 8; // matches the real hardware: 7 Patch parts + Part 8 fixed to Rhythm
+    PerformancePart performanceParts[kNumPerformanceParts];
+    char performanceName[13] = "Performance "; // 12 chars + NUL, matches the firmware's own name field width
     bool performanceModeEnabled = false;
 
-    void sendPatchToPerformanceSlot(int patchInfoIndex, int slotIndex);
-    void clearPerformanceSlot(int slotIndex);
-    void setPerformanceSlotParams(int slotIndex, int midiChannel, int level, int pan, bool enabled);
+    void sendPatchToPerformancePart(int patchInfoIndex, int partIndex);
+    void clearPerformancePart(int partIndex);
+    void setPerformancePartParams(int partIndex, int midiChannel, int level, int pan, bool enabled);
     void setPerformanceModeEnabled(bool enabled);
+    void setPerformanceName(const juce::String &name);
+
+    // patchInfos[] index 0..194 only (the ROM-native factory tones/rhythm-sets) - see
+    // performancePatchMapping() in the .cpp for why everything else is excluded.
+    bool isEligibleForPerformancePart(int patchInfoIndex) const;
 
     static juce::File performancesDir();
     bool savePerformanceAs(const juce::File &file);
@@ -189,7 +207,7 @@ public:
     std::vector<PerformanceBankInfo> performanceBank;
 
     // Session persistence (Alan's request, 2026-09-07): unlike the rest of the Performance
-    // state, the 4 in-progress slots + mode-enabled flag now survive an app/plugin restart -
+    // state, the 8 in-progress parts + mode-enabled flag now survive an app/plugin restart -
     // written to their own small file (same reasoning as keyboardSettingsFile(): DataToSave is
     // a fixed-size blob that can't safely grow). This is deliberately NOT the same file a "Save
     // As..." performance uses, and lives outside performancesDir() so it never shows up in the
@@ -280,13 +298,15 @@ private:
     std::vector<std::array<uint8_t, 0xa7c>> userDrumBuffers;
     std::vector<std::string> userPatchNames;
 
-    // Performance mode's 4 parallel engines - lazily constructed/startSC55'd by
-    // setPerformanceModeEnabled(true) the first time it's used, reusing the same loadedRoms[]
-    // buffers the constructor already loaded (no extra disk I/O). perfScratch holds each
-    // engine's own stereo render buffer for the current block, sized in prepareToPlay().
-    std::array<std::unique_ptr<MCU>, 4> perfEngines;
-    juce::AudioBuffer<float> perfScratch[4];
-    void loadPerformanceSlotIntoEngine(int slotIndex);
+    // Performance mode v2 internals - pushes one Part's (or Common's) record to the single
+    // `mcu` engine over SysEx DT1. Callers must already hold mcuLock. See PerformancePart's own
+    // comment above for the address map and its sourcing.
+    void pushPerformanceCommonToEngine();
+    void pushPerformancePartToEngine(int partIndex);
+    // Low-level Roland DT1 send (F0 41 10 46 12 <4-byte address> <data...> <checksum> F7) -
+    // sendSysexParamChange() is just this with a 1-byte payload. Callers must already hold
+    // mcuLock.
+    void sendSysexBlock(uint32_t address, const uint8_t *data, size_t length);
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VirtualJVProcessor)
