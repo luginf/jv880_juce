@@ -41,20 +41,38 @@ static const char *groupNames[] = {
            // bank, so the romInfos-loaded checks below all skip this row.
 };
 
-const int columns = 6;
-const int rowPerColumn = 44;
+// Fixed pool of ListBoxes PatchBrowser ever allocates - reflowPatchColumns() shows/hides and
+// resizes however many of these (activeColumns, <= this pool size) the current window height
+// and category actually need, rather than a fixed 6x44 grid (Alan's request, 2026-09-07: a
+// short window used to just force scrolling within a fixed 44-row column instead of using the
+// extra width for more, shorter columns). Comfortably more than minColumnWidth would ever allow
+// to actually fit side by side even in a very short window.
+const int maxColumnsPool = 10;
+const int rowHeight = 17;
+const int minColumnWidth = 90;
 
 //==============================================================================
 /*
  */
-class PatchBrowser : public juce::Component {
+class PatchBrowser : public juce::Component, public juce::ChangeListener {
 public:
   PatchBrowser(VirtualJVProcessor &);
   ~PatchBrowser() override;
 
   void resized() override;
 
+  // Recomputes how many columns are needed to show the current category's full patch list
+  // without scrolling in the available height, and how many rows each then holds - called from
+  // resized() (window/tab-area size changed) and, via changeListenerCallback() below, whenever
+  // the selected category changes (different categories have different patch counts, so the
+  // same window height can need a different column count).
+  void reflowPatchColumns();
+  void changeListenerCallback(juce::ChangeBroadcaster *) override { reflowPatchColumns(); }
+
   VirtualJVProcessor &processor;
+
+  int activeColumns = 1;
+  int currentRowsPerColumn = 1;
 
   // Discards edits made to the current patch since it was picked - Alan's request. A plain
   // juce::TextButton, not the custom widgets/Button.h (that one's a ToggleButton for on/off
@@ -175,12 +193,30 @@ public:
       }
     }
 
+    // All 6 columns scroll together as one (Alan's request, 2026-09-07) instead of each having
+    // its own independent scrollbar/position - they're all slices of the very same list, so
+    // scrolling any one of them keeps the whole grid's rows vertically aligned across columns.
+    // listWasScrolled() fires for both user-driven and programmatic position changes, so
+    // parent->syncingScroll guards against the setVerticalPosition() calls below re-triggering
+    // this same callback on every other column (infinite mutual recursion otherwise).
+    void listWasScrolled() override {
+      if (parent->syncingScroll || owner == nullptr)
+        return;
+
+      parent->syncingScroll = true;
+      const double position = owner->getVerticalPosition();
+      for (int i = 0; i < parent->activeColumns; i++)
+        if (parent->patchesListBoxes[i] != owner)
+          parent->patchesListBoxes[i]->setVerticalPosition(position);
+      parent->syncingScroll = false;
+    }
+
     void selectedRowsChanged(int lastRowSelected) override {
       if (!parent->processor.loaded) {
         return;
       }
 
-      for (size_t i = 0; i < columns; i++) {
+      for (int i = 0; i < maxColumnsPool; i++) {
         if (lastRowSelected != -1 && parent->patchesListBoxes[i] != owner)
           parent->patchesListBoxes[i]->deselectAllRows();
       }
@@ -193,6 +229,53 @@ public:
                 ->iInList);
     }
 
+    // Right-click -> "Send to Performance Slot N" (Alan's request, 2026-09-07). JUCE's ListBox
+    // selects the clicked row (triggering selectedRowsChanged() above, i.e. also loading it into
+    // the main single-patch editor) before calling this, even on a right-click - not worth
+    // fighting for a standard ListBox short of a fully custom row component, and arguably useful
+    // anyway (you can hear the patch while sending it to a slot).
+    void listBoxItemClicked(int row, const juce::MouseEvent &e) override {
+      if (!e.mods.isPopupMenu() || !parent->processor.loaded) {
+        return;
+      }
+
+      int selected = row + startI;
+      if (selected < 0 || selected >= parent->processor.patchInfoPerGroup[groupI].size()) {
+        return;
+      }
+      int index = parent->processor.patchInfoPerGroup[groupI][selected]->iInList;
+
+      // Deferred to the next message-loop turn (confirmed necessary while testing this
+      // feature): selecting a row that also flips Patch/Rhythm mode makes
+      // selectedRowsChanged() above - called synchronously, as part of this same mouse-up,
+      // just before JUCE calls this method - rebuild the whole TabbedComponent
+      // (tabs.clearTabs()/addTab() inside VirtualJVEditor::showToneOrRhythmEditTabs()).
+      // Showing the popup inline, mid-rebuild, made it silently fail to appear. Letting that
+      // settle first sidesteps relying on JUCE's reparenting-during-event-dispatch behaviour.
+      juce::Component::SafePointer<PatchBrowser> safeParent(parent);
+      juce::MessageManager::callAsync([safeParent, index] {
+        if (safeParent == nullptr) {
+          return;
+        }
+
+        auto menu = juce::PopupMenu();
+        for (int s = 0; s < 4; s++) {
+          auto &slot = safeParent->processor.performanceSlots[s];
+          juce::String label = "Send to Performance Slot " + juce::String(s + 1) +
+                               (slot.present ? " (" + juce::String(slot.name) + ")" : " (Empty)");
+          menu.addItem(s + 1, label);
+        }
+        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(),
+                           [safeParent, index](int result) {
+          if (safeParent == nullptr) {
+            return;
+          }
+          if (result >= 1 && result <= 4)
+            safeParent->processor.sendPatchToPerformanceSlot(index, result - 1);
+        });
+      });
+    }
+
     int groupI = 0;
     int startI;
     int endI;
@@ -202,8 +285,12 @@ public:
     PatchBrowser *parent;
   };
 
-  PatchesListModel *patchesListModels[columns];
-  juce::ListBox *patchesListBoxes[columns];
+  PatchesListModel *patchesListModels[maxColumnsPool];
+  juce::ListBox *patchesListBoxes[maxColumnsPool];
+
+  // Guards PatchesListModel::listWasScrolled() against the mutual-recursion its own
+  // setVerticalPosition() calls would otherwise cause (see that method's own comment).
+  bool syncingScroll = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PatchBrowser)
 };

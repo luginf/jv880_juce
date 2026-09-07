@@ -14,7 +14,7 @@
 //==============================================================================
 VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     : AudioProcessorEditor(&p), processor(p),
-      lcd(p), tabs(), patchBrowser(p), editCommonTab(p),
+      lcd(p), tabs(), patchBrowser(p), performanceTab(p), editCommonTab(p),
       editTone1Tab(p, this, 0U), editTone2Tab(p, this, 1U), editTone3Tab(p, this, 2U), editTone4Tab(p, this, 3U), editRhythmTab(p, this),
       settingsTab(p), virtualKeyboard(p)
 {
@@ -116,6 +116,11 @@ void VirtualJVEditor::updateEditTabs()
     settingsTab.updateValues();
 }
 
+void VirtualJVEditor::updatePerformanceTab()
+{
+    performanceTab.refreshFromProcessor();
+}
+
 void VirtualJVEditor::showToneOrRhythmEditTabs(const bool isRhythm)
 {
     // Rebuilding the tabs (clearTabs() + re-addTab() below) is only needed when the tone/rhythm
@@ -140,22 +145,27 @@ void VirtualJVEditor::showToneOrRhythmEditTabs(const bool isRhythm)
     if (isRhythm)
     {
         tabs.addTab("Browse", bgColor, &patchBrowser, false);
-        tabs.addTab("Settings", bgColor, &settingsViewport, false);
+        tabs.addTab("Performance", bgColor, &performanceTab, false);
         tabs.addTab("Common", bgColor, &editCommonViewport, false);
         tabs.addTab("Rhythm Set", bgColor, &editRhythmViewport, false);
+        tabs.addTab("Settings", bgColor, &settingsViewport, false);
     }
     else
     {
         tabs.addTab("Browse", bgColor, &patchBrowser, false);
-        tabs.addTab("Settings", bgColor, &settingsViewport, false);
+        tabs.addTab("Performance", bgColor, &performanceTab, false);
         tabs.addTab("Common", bgColor, &editCommonViewport, false);
         tabs.addTab("Tone 1", bgColor, &editTone1Viewport, false);
         tabs.addTab("Tone 2", bgColor, &editTone2Viewport, false);
         tabs.addTab("Tone 3", bgColor, &editTone3Viewport, false);
         tabs.addTab("Tone 4", bgColor, &editTone4Viewport, false);
+        tabs.addTab("Settings", bgColor, &settingsViewport, false);
     }
 
-    // just in case...
+    // just in case... - index 3 is "Rhythm Set" in the isRhythm branch (Browse=0, Performance=1,
+    // Common=2, Rhythm Set=3, Settings=4) - Settings moved to the end (Alan's request,
+    // 2026-09-07), which happens to put Rhythm Set back at its original pre-Performance-tab
+    // index since Settings no longer sits between Performance and Common.
     if (selTab > 3 && processor.status.isDrums)
     {
         selTab = 3;

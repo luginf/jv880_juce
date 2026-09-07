@@ -20,6 +20,12 @@ namespace {
 // a pure attenuator, so if this still isn't enough Alan can say so and it can be raised further.
 constexpr float kOutputMakeupGain = 1.5f;
 
+// Performance mode sums up to 4 full-level engines before kOutputMakeupGain is applied, so it
+// needs its own separate attenuation rather than reusing that single-engine figure as-is (which
+// would clip easily) or dividing flatly by 4 (which would needlessly quieten a single active
+// slot). Starting estimate, same caveat as kOutputMakeupGain's own comment - adjust by ear.
+constexpr float kPerformanceModeGain = 0.6f;
+
 juce::File keyboardSettingsFile() {
   return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
       .getChildFile("JV880")
@@ -252,13 +258,21 @@ VirtualJVProcessor::VirtualJVProcessor()
   userDrumBuffers.reserve(userPatchCapacity);
   userPatchNames.reserve(userPatchCapacity);
   refreshUserPatches();
+  refreshPerformanceBank();
 
   loaded = true;
+
+  loadPerformanceSessionState();
 }
 
 VirtualJVProcessor::~VirtualJVProcessor() {
   mcuLock.enter();
   delete mcu;
+  // perfEngines are unique_ptrs - reset explicitly inside the same locked block rather than
+  // relying on implicit member teardown after this destructor body returns (which would run
+  // after mcuLock has already been released), matching the defensive posture around `mcu` above.
+  for (auto &engine : perfEngines)
+    engine.reset();
   mcuLock.exit();
 }
 
@@ -539,6 +553,310 @@ void VirtualJVProcessor::refreshUserPatches() {
   }
 }
 
+namespace {
+constexpr size_t kPerfSlotNameBytes = sizeof(VirtualJVProcessor::PerformanceSlot{}.name);
+// marker(1) + expansionI(1) + name + midiChannel(1) + level(1) + pan(1) + enabled(1) + raw(0xa7c)
+constexpr size_t kPerfSlotRecordBytes = 1 + 1 + kPerfSlotNameBytes + 1 + 1 + 1 + 1 + 0xa7c;
+
+// Shared by the "Save As..." bank format and the session-restore file - both serialize the same
+// 4 PerformanceSlots, just under different filenames/directories (see performancesDir() vs
+// performanceSessionFile()).
+void appendPerformanceSlots(juce::MemoryBlock &block,
+                             const VirtualJVProcessor::PerformanceSlot (&slots)[4]) {
+  for (auto &slot : slots) {
+    uint8_t marker = !slot.present ? 2 : (slot.isDrums ? 1 : 0);
+    block.append(&marker, 1);
+
+    uint8_t expansionByte = slot.expansionI;
+    block.append(&expansionByte, 1);
+
+    char nameBuf[kPerfSlotNameBytes] = {0};
+    memcpy(nameBuf, slot.name, sizeof(nameBuf));
+    block.append(nameBuf, sizeof(nameBuf));
+
+    uint8_t ch = (uint8_t)slot.midiChannel;
+    block.append(&ch, 1);
+    uint8_t lvl = (uint8_t)slot.level;
+    block.append(&lvl, 1);
+    int8_t pan = (int8_t)slot.pan;
+    block.append(&pan, 1);
+    uint8_t en = slot.enabled ? 1 : 0;
+    block.append(&en, 1);
+
+    block.append(slot.raw, sizeof(slot.raw));
+  }
+}
+
+// Returns false (leaving `slots` untouched) if `size` doesn't match 4 records exactly - a file
+// this build didn't write, or written by a since-changed format.
+bool readPerformanceSlots(const uint8_t *bytes, size_t size,
+                           VirtualJVProcessor::PerformanceSlot (&slots)[4]) {
+  if (size != 4 * kPerfSlotRecordBytes)
+    return false;
+
+  size_t offset = 0;
+  for (int i = 0; i < 4; i++) {
+    auto &slot = slots[i];
+
+    uint8_t marker = bytes[offset]; offset += 1;
+    uint8_t expansionByte = bytes[offset]; offset += 1;
+    const char *nameBytes = (const char *)(bytes + offset); offset += kPerfSlotNameBytes;
+    uint8_t ch = bytes[offset]; offset += 1;
+    uint8_t lvl = bytes[offset]; offset += 1;
+    int8_t pan = (int8_t)bytes[offset]; offset += 1;
+    uint8_t en = bytes[offset]; offset += 1;
+    const uint8_t *raw = bytes + offset; offset += 0xa7c;
+
+    slot.present = marker != 2;
+    slot.isDrums = marker == 1;
+    slot.expansionI = expansionByte;
+    memcpy(slot.name, nameBytes, sizeof(slot.name));
+    slot.name[sizeof(slot.name) - 1] = '\0'; // defensive against a corrupt/foreign file
+    slot.midiChannel = ch;
+    slot.level = lvl;
+    slot.pan = pan;
+    slot.enabled = en != 0;
+    memcpy(slot.raw, raw, sizeof(slot.raw));
+  }
+  return true;
+}
+} // namespace
+
+// Loads one Performance slot's cached raw bytes into its engine via the exact same direct-
+// NVRAM-poke + SC55_Reset() mechanism setCurrentProgram() already uses for the main single-
+// patch engine. Callers must already hold mcuLock and have already checked the target engine
+// exists (SpinLock isn't reentrant) - only called from within Performance-mode code paths.
+void VirtualJVProcessor::loadPerformanceSlotIntoEngine(int slotIndex) {
+  auto &slot = performanceSlots[slotIndex];
+  auto *engine = perfEngines[slotIndex].get();
+  if (engine == nullptr || !slot.present)
+    return;
+
+  if (slot.expansionI != 0xff && slot.expansionI < NUM_EXPS
+      && expansionsDescr[slot.expansionI] != nullptr) {
+    memcpy(engine->pcm.waverom_exp, expansionsDescr[slot.expansionI], 0x800000);
+  }
+
+  if (slot.isDrums) {
+    engine->nvram[0x11] = 0;
+    memcpy(&engine->nvram[0x67f0], slot.raw, 0xa7c);
+  } else {
+    engine->nvram[0x11] = 1;
+    memcpy(&engine->nvram[0x0d70], slot.raw, 0x16a);
+  }
+
+  engine->SC55_Reset();
+}
+
+void VirtualJVProcessor::sendPatchToPerformanceSlot(int patchInfoIndex, int slotIndex) {
+  if (!loaded || patchInfoIndex < 0 || patchInfoIndex >= romPatchCapacity + userPatchCapacity
+      || !patchInfos[patchInfoIndex].present || slotIndex < 0 || slotIndex >= 4)
+    return;
+
+  auto &info = patchInfos[patchInfoIndex];
+  auto &slot = performanceSlots[slotIndex];
+
+  mcuLock.enter();
+
+  slot.isDrums = info.drums;
+  slot.expansionI = (uint8_t)juce::jlimit(0, 0xff, info.expansionI);
+
+  // Mirrors setCurrentProgram()'s own branch exactly (PatchInfo::ptr is only ever populated for
+  // rhythm entries - tone entries carry their raw bytes via ::name instead, whose first 12 bytes
+  // double as the embedded Patch name).
+  const uint8_t *src = info.drums ? (const uint8_t *)info.ptr : (const uint8_t *)info.name;
+  memcpy(slot.raw, src, info.drums ? 0xa7c : 0x16a);
+
+  // Clamped, not a raw memcpy of info.nameLength: the 3 built-in ROM rhythm entries
+  // (see the constructor above) hardcode nameLength=21 regardless of their actual shorter
+  // string length, which would overflow slot.name's fixed 13 bytes otherwise.
+  const int n = std::min(info.nameLength, (int)sizeof(slot.name) - 1);
+  memcpy(slot.name, info.name, (size_t)n);
+  slot.name[n] = '\0';
+
+  slot.present = true;
+
+  if (performanceModeEnabled)
+    loadPerformanceSlotIntoEngine(slotIndex);
+
+  mcuLock.exit();
+
+  savePerformanceSessionState();
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->updatePerformanceTab();
+}
+
+void VirtualJVProcessor::clearPerformanceSlot(int slotIndex) {
+  if (slotIndex < 0 || slotIndex >= 4)
+    return;
+
+  mcuLock.enter();
+  performanceSlots[slotIndex] = PerformanceSlot();
+  mcuLock.exit();
+
+  savePerformanceSessionState();
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->updatePerformanceTab();
+}
+
+void VirtualJVProcessor::setPerformanceSlotParams(int slotIndex, int midiChannel, int level,
+                                                    int pan, bool enabled) {
+  if (slotIndex < 0 || slotIndex >= 4)
+    return;
+
+  auto &slot = performanceSlots[slotIndex];
+  slot.midiChannel = juce::jlimit(0, 16, midiChannel);
+  slot.level = juce::jlimit(0, 127, level);
+  slot.pan = juce::jlimit(-64, 63, pan);
+  slot.enabled = enabled;
+
+  savePerformanceSessionState();
+}
+
+void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
+  if (!loaded)
+    return;
+
+  mcuLock.enter();
+
+  // Lazily built the first time Performance mode is actually engaged - ~20MB/engine (waveroms +
+  // LCD buffers), no reason to pay that for users who never touch this tab.
+  if (enabled && perfEngines[0] == nullptr) {
+    for (auto &engine : perfEngines) {
+      engine = std::make_unique<MCU>();
+      engine->startSC55(loadedRoms[getRomIndex("jv880_rom1.bin")],
+                         loadedRoms[getRomIndex("jv880_rom2.bin")],
+                         loadedRoms[getRomIndex("jv880_waverom1.bin")],
+                         loadedRoms[getRomIndex("jv880_waverom2.bin")],
+                         loadedRoms[getRomIndex("jv880_nvram.bin")]);
+    }
+
+    for (int i = 0; i < 4; ++i)
+      loadPerformanceSlotIntoEngine(i);
+  }
+
+  performanceModeEnabled = enabled;
+
+  mcuLock.exit();
+
+  savePerformanceSessionState();
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->updatePerformanceTab();
+}
+
+juce::File VirtualJVProcessor::performancesDir() {
+  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      .getChildFile("JV880")
+      .getChildFile("Performances");
+}
+
+bool VirtualJVProcessor::savePerformanceAs(const juce::File &file) {
+  juce::MemoryBlock block;
+
+  mcuLock.enter();
+  appendPerformanceSlots(block, performanceSlots);
+  mcuLock.exit();
+
+  file.getParentDirectory().createDirectory();
+  if (!file.replaceWithData(block.getData(), block.getSize()))
+    return false;
+
+  refreshPerformanceBank();
+  return true;
+}
+
+// (Re)scans performancesDir() and rebuilds performanceBank - same "full rescan, no index file"
+// approach as refreshUserPatches(), called at startup and after every savePerformanceAs().
+void VirtualJVProcessor::refreshPerformanceBank() {
+  performanceBank.clear();
+
+  auto dir = performancesDir();
+  dir.createDirectory();
+
+  auto files = dir.findChildFiles(juce::File::findFiles, false, "*.jvpf");
+  files.sort();
+
+  for (auto &file : files) {
+    if (file.getSize() != (int64_t)(4 * kPerfSlotRecordBytes))
+      continue; // not a file this build wrote (wrong size) - skip rather than risk misreading it
+
+    performanceBank.push_back({file.getFileNameWithoutExtension(), file});
+  }
+}
+
+void VirtualJVProcessor::loadPerformance(int bankIndex) {
+  if (bankIndex < 0 || bankIndex >= (int)performanceBank.size())
+    return;
+
+  juce::MemoryBlock block;
+  if (!performanceBank[bankIndex].file.loadFileAsData(block))
+    return;
+
+  mcuLock.enter();
+
+  if (readPerformanceSlots(static_cast<const uint8_t *>(block.getData()), block.getSize(),
+                            performanceSlots)) {
+    if (performanceModeEnabled)
+      for (int i = 0; i < 4; ++i)
+        if (performanceSlots[i].present)
+          loadPerformanceSlotIntoEngine(i);
+  }
+
+  mcuLock.exit();
+
+  savePerformanceSessionState();
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->updatePerformanceTab();
+}
+
+juce::File VirtualJVProcessor::performanceSessionFile() {
+  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      .getChildFile("JV880")
+      .getChildFile("performance_session.dat");
+}
+
+void VirtualJVProcessor::savePerformanceSessionState() {
+  juce::MemoryBlock block;
+  uint8_t modeByte = performanceModeEnabled ? 1 : 0;
+  block.append(&modeByte, 1);
+  appendPerformanceSlots(block, performanceSlots);
+
+  auto file = performanceSessionFile();
+  file.getParentDirectory().createDirectory();
+  file.replaceWithData(block.getData(), block.getSize());
+}
+
+// Called once at construction, after refreshPerformanceBank() - restores the 4 in-progress
+// slots and whether Performance mode was on, so closing and reopening the plugin/app picks up
+// right where it left off (Alan's request, 2026-09-07). Deliberately separate from the Bank
+// (performancesDir()) - this file is never listed there.
+void VirtualJVProcessor::loadPerformanceSessionState() {
+  auto file = performanceSessionFile();
+  if (!file.existsAsFile())
+    return;
+
+  juce::MemoryBlock block;
+  if (!file.loadFileAsData(block) || block.getSize() < 1)
+    return;
+
+  const auto *bytes = static_cast<const uint8_t *>(block.getData());
+  const bool wantEnabled = bytes[0] != 0;
+
+  if (!readPerformanceSlots(bytes + 1, block.getSize() - 1, performanceSlots))
+    return;
+
+  if (wantEnabled)
+    setPerformanceModeEnabled(true); // lazily builds/loads perfEngines from the slots just read
+}
+
 const juce::String VirtualJVProcessor::getProgramName(int index) {
   // See setCurrentProgram()'s own comment on why this isn't bounded by getNumPrograms().
   if (index < 0 || index >= romPatchCapacity + userPatchCapacity || !patchInfos[index].present)
@@ -553,8 +871,13 @@ void VirtualJVProcessor::changeProgramName(int /* index */,
 
 //==============================================================================
 void VirtualJVProcessor::prepareToPlay(double sampleRate,
-                                             int /* samplesPerBlock */) {
+                                             int samplesPerBlock) {
   keyboardCollector.reset(sampleRate);
+
+  for (auto &scratch : perfScratch)
+    scratch.setSize(2, samplesPerBlock);
+
+  dspLoadMeasurer.reset(sampleRate, samplesPerBlock);
 }
 
 void VirtualJVProcessor::releaseResources() {
@@ -572,28 +895,28 @@ bool VirtualJVProcessor::isBusesLayoutSupported(
 
 void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::MidiBuffer &midiMessages)
 {
+  // Spans the whole block (MIDI handling + the actual DSP below) - covers Patch mode's single
+  // engine and Performance mode's up to 4 engines alike, same convention as any other JUCE
+  // plugin's CPU meter. Read from SettingsTab via dspLoadMeasurer.getLoadAsPercentage().
+  juce::AudioProcessLoadMeasurer::ScopedTimer loadTimer(dspLoadMeasurer, buffer.getNumSamples());
+
   // The on-screen VirtualKeyboard's notes, queued by injectTestNote() - merged in exactly the
   // same way a real MIDI IN port's messages would be.
   keyboardCollector.removeNextBlockOfMessages(midiMessages, buffer.getNumSamples());
 
   mcuLock.enter();
 
+  // Tracked once regardless of Patch/Performance mode - same value either way, so there's no
+  // point recomputing it once per active performance slot below.
   for (const auto metadata : midiMessages)
   {
     auto message = metadata.getMessage();
-
-    message.setChannel(status.isDrums ? 10 : 1);
-
     if (message.isNoteOnOrOff())
     {
       int note = message.getNoteNumber();
       if (note >= 0 && note < 128)
         noteActiveTable[static_cast<size_t>(note)].store(message.isNoteOn());
     }
-
-    int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
-
-    mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
   }
 
   juce::ScopedNoDenormals noDenormals;
@@ -612,11 +935,71 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
     return;
   }
 
-  float *channelDataL = buffer.getWritePointer(0);
-  float *channelDataR = buffer.getWritePointer(1);
+  const int numSamples = buffer.getNumSamples();
 
-  mcu->updateSC55WithSampleRate(channelDataL, channelDataR,
-                                buffer.getNumSamples(), (int)getSampleRate());
+  if (performanceModeEnabled)
+  {
+    // Mutually exclusive with the single-Patch engine below, same as the real hardware's own
+    // PATCH/PERFORM button - the idle `mcu` isn't touched at all while this is active.
+    buffer.clear();
+
+    for (int slotI = 0; slotI < 4; ++slotI)
+    {
+      auto &slot = performanceSlots[slotI];
+      if (!slot.present || !slot.enabled || perfEngines[slotI] == nullptr)
+        continue;
+
+      auto *engine = perfEngines[slotI].get();
+
+      for (const auto metadata : midiMessages)
+      {
+        auto message = metadata.getMessage();
+
+        // Original incoming channel, before any remap - 0 means "respond to everything",
+        // matching a real Performance Part's receive-channel behaviour closely enough for a
+        // layered "fat sound" out of the box, while still allowing a per-slot split.
+        if (slot.midiChannel != 0 && message.getChannel() != slot.midiChannel)
+          continue;
+
+        message.setChannel(slot.isDrums ? 10 : 1);
+
+        int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
+
+        engine->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+      }
+
+      float *scratchL = perfScratch[slotI].getWritePointer(0);
+      float *scratchR = perfScratch[slotI].getWritePointer(1);
+      engine->updateSC55WithSampleRate(scratchL, scratchR, numSamples, (int)getSampleRate());
+
+      // Simple linear pan/level, same convention as the plugin's own linear Master Volume
+      // (SettingsTab) - no equal-power precedent exists elsewhere in this codebase to match.
+      const float leftGain = juce::jlimit(0.0f, 1.0f, 1.0f - (float)juce::jmax(0, slot.pan) / 63.0f);
+      const float rightGain = juce::jlimit(0.0f, 1.0f, 1.0f + (float)juce::jmin(0, slot.pan) / 64.0f);
+      const float gain = (slot.level / 127.0f) * kPerformanceModeGain;
+
+      buffer.addFrom(0, 0, perfScratch[slotI], 0, 0, numSamples, leftGain * gain);
+      buffer.addFrom(1, 0, perfScratch[slotI], 1, 0, numSamples, rightGain * gain);
+    }
+  }
+  else
+  {
+    for (const auto metadata : midiMessages)
+    {
+      auto message = metadata.getMessage();
+
+      message.setChannel(status.isDrums ? 10 : 1);
+
+      int samplePos = int(((double)metadata.samplePosition / getSampleRate()) * 64000.0);
+
+      mcu->enqueueMidiSC55(message.getRawData(), message.getRawDataSize(), samplePos);
+    }
+
+    float *channelDataL = buffer.getWritePointer(0);
+    float *channelDataR = buffer.getWritePointer(1);
+
+    mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate());
+  }
 
   mcuLock.exit();
 

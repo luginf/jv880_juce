@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <vector>
 #include <JuceHeader.h>
 #include "emulator/mcu.h"
@@ -147,6 +148,56 @@ public:
         int iInList;
     };
 
+    //==============================================================================
+    // Performance mode (Alan's request, 2026-09-07): a pragmatic clone of the real JV-880's
+    // multitimbral Performance Play mode, NOT a drive of the real firmware's own (unreverse-
+    // engineered) Performance Temp NVRAM area - see the "Mode Performance" plan for the full
+    // rationale. Each of the 4 slots gets its own fully independent MCU engine (perfEngines
+    // below), loaded via the exact same direct-NVRAM-poke mechanism setCurrentProgram() already
+    // uses for the main single-patch engine, mixed together in processBlock().
+    struct PerformanceSlot
+    {
+        bool present = false;
+        bool isDrums = false;
+        uint8_t expansionI = 0xff;
+        char name[32] = {0}; // display name, cached at assignment time - see sendPatchToPerformanceSlot()
+        uint8_t raw[0xa7c] = {0}; // holds either the 0x16a Patch or the 0xa7c Rhythm bytes
+        int midiChannel = 0; // 0 = respond to all channels, else 1-16
+        int level = 100;     // 0-127
+        int pan = 0;         // -64..63
+        bool enabled = true;
+    };
+
+    PerformanceSlot performanceSlots[4];
+    bool performanceModeEnabled = false;
+
+    void sendPatchToPerformanceSlot(int patchInfoIndex, int slotIndex);
+    void clearPerformanceSlot(int slotIndex);
+    void setPerformanceSlotParams(int slotIndex, int midiChannel, int level, int pan, bool enabled);
+    void setPerformanceModeEnabled(bool enabled);
+
+    static juce::File performancesDir();
+    bool savePerformanceAs(const juce::File &file);
+    void refreshPerformanceBank();
+    void loadPerformance(int bankIndex);
+
+    struct PerformanceBankInfo
+    {
+        juce::String name;
+        juce::File file;
+    };
+    std::vector<PerformanceBankInfo> performanceBank;
+
+    // Session persistence (Alan's request, 2026-09-07): unlike the rest of the Performance
+    // state, the 4 in-progress slots + mode-enabled flag now survive an app/plugin restart -
+    // written to their own small file (same reasoning as keyboardSettingsFile(): DataToSave is
+    // a fixed-size blob that can't safely grow). This is deliberately NOT the same file a "Save
+    // As..." performance uses, and lives outside performancesDir() so it never shows up in the
+    // Performance Bank list. Loaded once at construction, saved after every mutation.
+    static juce::File performanceSessionFile();
+    void savePerformanceSessionState();
+    void loadPerformanceSessionState();
+
     struct DataToSave
     {
         int8_t masterTune{0};
@@ -183,6 +234,12 @@ public:
     bool loaded = false;
 
     juce::SpinLock mcuLock;
+
+    // DSP load meter (Alan's request, 2026-09-07) - measures the proportion of each audio block's
+    // real-time budget spent inside processBlock(), covering both Patch mode (1 engine) and
+    // Performance mode (up to 4 engines) alike. Thread-safe/lock-free to read (internally atomic),
+    // polled by SettingsTab on a Timer - see AudioProcessLoadMeasurer's own header for details.
+    juce::AudioProcessLoadMeasurer dspLoadMeasurer;
 
 private:
     // VirtualKeyboard support - see the VirtualKeyboardHost overrides above.
@@ -222,6 +279,14 @@ private:
     std::vector<std::array<uint8_t, 0x16a>> userToneBuffers;
     std::vector<std::array<uint8_t, 0xa7c>> userDrumBuffers;
     std::vector<std::string> userPatchNames;
+
+    // Performance mode's 4 parallel engines - lazily constructed/startSC55'd by
+    // setPerformanceModeEnabled(true) the first time it's used, reusing the same loadedRoms[]
+    // buffers the constructor already loaded (no extra disk I/O). perfScratch holds each
+    // engine's own stereo render buffer for the current block, sized in prepareToPlay().
+    std::array<std::unique_ptr<MCU>, 4> perfEngines;
+    juce::AudioBuffer<float> perfScratch[4];
+    void loadPerformanceSlotIntoEngine(int slotIndex);
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VirtualJVProcessor)

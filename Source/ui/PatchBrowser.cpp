@@ -59,7 +59,7 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
             // the active category right now.
             categoriesListBox.updateContent();
             categoriesListBox.repaint();
-            for (int i = 0; i < columns; i++)
+            for (int i = 0; i < maxColumnsPool; i++)
             {
               patchesListBoxes[i]->updateContent();
               patchesListBoxes[i]->repaint();
@@ -69,17 +69,18 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
 
   categoriesListBox.setRowHeight(34);
   addAndMakeVisible(categoriesListBox);
+  categoriesListModel.addChangeListener(this);
 
-  for (int i = 0; i < columns; i++)
+  for (int i = 0; i < maxColumnsPool; i++)
   {
-    patchesListModels[i] =
-        new PatchesListModel(rowPerColumn * i, rowPerColumn * (i + 1), this,
-                             &categoriesListBox, &categoriesListModel);
+    // Real startI/endI are set by the first reflowPatchColumns() call (triggered by the initial
+    // resized() pass before anything is shown) - these are just placeholders.
+    patchesListModels[i] = new PatchesListModel(0, 0, this, &categoriesListBox, &categoriesListModel);
     patchesListBoxes[i] = new juce::ListBox("Patches", patchesListModels[i]);
     patchesListModels[i]->owner = patchesListBoxes[i];
 
-    patchesListBoxes[i]->setRowHeight(17);
-    addAndMakeVisible(*patchesListBoxes[i]);
+    patchesListBoxes[i]->setRowHeight(rowHeight);
+    addChildComponent(*patchesListBoxes[i]); // visibility (in/active) decided by reflowPatchColumns()
   }
 
   if (processor.loaded)
@@ -92,8 +93,8 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
     categoriesListBox.selectRow(processor.status.selectedRom);
 
     /* this doesn't seem to work for some reason
-    const auto col = processor.status.selectedPatch / rowPerColumn;
-    const auto row = processor.status.selectedPatch % rowPerColumn;
+    const auto col = processor.status.selectedPatch / currentRowsPerColumn;
+    const auto row = processor.status.selectedPatch % currentRowsPerColumn;
 
     patchesListBoxes[col]->selectRow(row);
     */
@@ -103,12 +104,14 @@ PatchBrowser::PatchBrowser(VirtualJVProcessor &p)
 PatchBrowser::~PatchBrowser()
 {
   processor.status.selectedRom = categoriesListBox.getSelectedRow();
+  categoriesListModel.removeChangeListener(this);
 
-  for (int i = 0; i < columns; i++)
+  for (int i = 0; i < maxColumnsPool; i++)
   {
     if (patchesListBoxes[i]->getSelectedRow() > -1)
     {
-      processor.status.selectedPatch = (i * rowPerColumn) + patchesListBoxes[i]->getSelectedRow();
+      processor.status.selectedPatch =
+          (i * currentRowsPerColumn) + patchesListBoxes[i]->getSelectedRow();
     }
 
     delete patchesListModels[i];
@@ -125,11 +128,90 @@ void PatchBrowser::resized()
   const int listsH = getHeight() - topBarH;
   categoriesListBox.setBounds(0, topBarH, 180, listsH);
 
-  for (int i = 0; i < columns; i++)
+  reflowPatchColumns();
+}
+
+// Spreads the current category's patches across as many columns as fit the available height
+// without scrolling, rather than a fixed 44 rows/column that only ever scrolled in place when
+// the window was short (Alan's request, 2026-09-07). Called on resize and on category change
+// (different categories hold different patch counts, so the same height can need a different
+// column count either way).
+void PatchBrowser::reflowPatchColumns()
+{
+  const int topBarH = 26;
+  const int listsH = getHeight() - topBarH;
+  const int availableWidth = getWidth() - 180;
+  if (listsH <= 0 || availableWidth <= 0)
+    return;
+
+  const int groupI = categoriesListBox.getSelectedRow();
+  const int totalItems =
+      (processor.loaded && groupI >= 0 && groupI < (int)processor.patchInfoPerGroup.size())
+          ? (int)processor.patchInfoPerGroup[groupI].size()
+          : 0;
+
+  const int rowsPerColumnByHeight = juce::jmax(1, listsH / rowHeight);
+  const int neededColumnsByHeight =
+      juce::jmax(1, (totalItems + rowsPerColumnByHeight - 1) / rowsPerColumnByHeight);
+  const int maxColumnsByWidth = juce::jmin(maxColumnsPool, juce::jmax(1, availableWidth / minColumnWidth));
+
+  int rowsPerColumn;
+  int newActiveColumns;
+  if (neededColumnsByHeight <= maxColumnsByWidth)
   {
-    patchesListBoxes[i]->setBounds(180 + (getWidth() - 180) / columns * i,
-                                   topBarH,
-                                   (getWidth() - 180) / columns,
-                                   listsH);
+    // Everything fits without scrolling - use exactly as many columns as that needs, not more.
+    newActiveColumns = neededColumnsByHeight;
+    rowsPerColumn = rowsPerColumnByHeight;
+  }
+  else
+  {
+    // Not enough width to show it all at once even using every column available - grow each
+    // column past what's visibly on-screen instead (falling back to the shared/synced scroll)
+    // so every item stays reachable, rather than silently capping the list at
+    // maxColumnsByWidth * rowsPerColumnByHeight and hiding the rest with no way to reach it.
+    newActiveColumns = maxColumnsByWidth;
+    rowsPerColumn = juce::jmax(rowsPerColumnByHeight,
+                               (totalItems + maxColumnsByWidth - 1) / maxColumnsByWidth);
+  }
+
+  // The grid dimensions actually changed - any existing row selection now maps to a different
+  // flat patch index than before (same local row, different startI), so drop it rather than
+  // leave a highlight pointing at the wrong patch. The currently loaded patch itself (LCD/edit
+  // tabs) is unaffected - this only clears the Browse list's own highlight.
+  const bool dimensionsChanged =
+      newActiveColumns != activeColumns || rowsPerColumn != currentRowsPerColumn;
+  if (dimensionsChanged)
+    for (int i = 0; i < maxColumnsPool; i++)
+      patchesListBoxes[i]->deselectAllRows();
+
+  activeColumns = newActiveColumns;
+  currentRowsPerColumn = rowsPerColumn;
+
+  const int columnWidth = availableWidth / activeColumns;
+
+  for (int i = 0; i < maxColumnsPool; i++)
+  {
+    if (i >= activeColumns)
+    {
+      patchesListBoxes[i]->setVisible(false);
+      continue;
+    }
+
+    const int newStartI = rowsPerColumn * i;
+    const int newEndI = rowsPerColumn * (i + 1);
+    if (patchesListModels[i]->startI != newStartI || patchesListModels[i]->endI != newEndI)
+    {
+      patchesListModels[i]->startI = newStartI;
+      patchesListModels[i]->endI = newEndI;
+      patchesListBoxes[i]->updateContent();
+    }
+
+    patchesListBoxes[i]->setVisible(true);
+    patchesListBoxes[i]->setBounds(180 + columnWidth * i, topBarH, columnWidth, listsH);
+
+    // Only the last active column keeps a (shared, see listWasScrolled()) scrollbar - the
+    // trailing `true` keeps mouse-wheel scrolling working on the others despite their scrollbar
+    // being hidden (Viewport::useMouseWheelMoveIfNeeded() otherwise gates on its visibility).
+    patchesListBoxes[i]->getViewport()->setScrollBarsShown(i == activeColumns - 1, false, true, false);
   }
 }

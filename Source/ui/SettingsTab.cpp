@@ -11,6 +11,17 @@
 #include "SettingsTab.h"
 #include <JuceHeader.h>
 
+// Only declares StandalonePluginHolder/AudioDeviceSelectorComponent wiring - this project builds
+// all of AU/LV2/Standalone/VST3 from one shared "Shared Code" library (see Builds/LinuxMakefile),
+// so JucePlugin_Build_Standalone is 1 for that shared compilation regardless of which actual
+// wrapper links it (each format's own small wrapper .cpp is what's format-specific). The real
+// per-instance check is the runtime one below (StandalonePluginHolder::getInstance() only
+// returns non-null inside the actual standalone executable, since that's the only wrapper that
+// ever constructs one).
+#if JucePlugin_Build_Standalone
+ #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
+
 //==============================================================================
 SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
 {
@@ -54,9 +65,54 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   addAndMakeVisible(buildDateLabel);
   buildDateLabel.setText(buildInfo, juce::dontSendNotification);
   buildDateLabel.setJustificationType(juce::Justification::centredRight);
+
+  addAndMakeVisible(audioSettingsHeaderLabel);
+  audioSettingsHeaderLabel.setText("Audio/MIDI Settings", juce::dontSendNotification);
+  audioSettingsHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+
+#if JucePlugin_Build_Standalone
+  if (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+  {
+    if (auto *holder = juce::StandalonePluginHolder::getInstance())
+    {
+      auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
+          holder->deviceManager,
+          0, holder->getNumInputChannels(),
+          0, holder->getNumOutputChannels(),
+          true,                    // showMidiInputOptions
+          processor.producesMidi(), // showMidiOutputSelector
+          true,                    // showChannelsAsStereoPairs
+          false);                  // hideAdvancedOptionsWithButton - keep sample rate/buffer size visible directly
+      addAndMakeVisible(*selector);
+      audioDeviceSelector = std::move(selector);
+    }
+  }
+#endif
+
+  if (audioDeviceSelector == nullptr)
+  {
+    addAndMakeVisible(audioSettingsUnavailableLabel);
+    audioSettingsUnavailableLabel.setText(
+        "Audio device and buffer size are controlled by your DAW/host when running as a plugin.",
+        juce::dontSendNotification);
+  }
+
+  addAndMakeVisible(dspLoadLabel);
+  dspLoadLabel.setText("DSP Load: -- %", juce::dontSendNotification);
+
+  startTimerHz(4);
 }
 
 SettingsTab::~SettingsTab() {}
+
+void SettingsTab::timerCallback()
+{
+  // dspLoadMeasurer is written from the audio thread but is internally atomic/lock-free to
+  // read - see juce::AudioProcessLoadMeasurer's own header.
+  const double loadPercent = processor.dspLoadMeasurer.getLoadAsPercentage();
+  dspLoadLabel.setText("DSP Load: " + juce::String(loadPercent, 1) + " %",
+                       juce::dontSendNotification);
+}
 
 void SettingsTab::updateValues()
 {
@@ -82,6 +138,21 @@ void SettingsTab::resized()
   chorusToggle      .setBounds(sliderLeft2 - 90, top, width, height);
   masterTuneSlider  .setBounds(sliderLeft3, top, width, height);
   masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
+  dspLoadLabel      .setBounds(sliderLeft1 - 90, row2Top, width, height);
+
+  // Below the rest (Alan's request, 2026-09-07) - this tab has plenty of unused vertical space
+  // between row2Top and buildDateLabel's own fixed position already.
+  const auto audioSectionTop = row2Top + height + 30;
+  audioSettingsHeaderLabel.setBounds(10, audioSectionTop, 400, 24);
+
+  const auto audioContentTop = audioSectionTop + 30;
+  const auto audioContentBottom = 725; // leaves buildDateLabel's own row (735) clear
+  if (audioDeviceSelector != nullptr)
+    audioDeviceSelector->setBounds(10, audioContentTop, getWidth() - 20,
+                                   audioContentBottom - audioContentTop);
+  else
+    audioSettingsUnavailableLabel.setBounds(10, audioContentTop, getWidth() - 20, 24);
+
   buildDateLabel    .setBounds(10, 735, 800, 20);
 }
 

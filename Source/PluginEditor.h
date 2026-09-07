@@ -17,6 +17,7 @@
 #include "ui/widgets/TabBar.h"
 #include "ui/widgets/VirtualKeyboard.h"
 #include "ui/PatchBrowser.h"
+#include "ui/PerformanceTab.h"
 #include "ui/EditCommonTab.h"
 #include "ui/EditToneTab.h"
 #include "ui/EditRhythmTab.h"
@@ -37,6 +38,7 @@ public:
 
     uint8_t getSelectedRomIdx();
     void updateEditTabs();
+    void updatePerformanceTab();
     void showToneOrRhythmEditTabs(const bool isRhythm);
 
     void setSelectedTab(const int index) { tabs.setCurrentTabIndex(index); }
@@ -58,6 +60,7 @@ private:
     LCDisplay lcd;
     TabBar tabs;
     PatchBrowser patchBrowser;
+    PerformanceTab performanceTab;
     EditCommonTab editCommonTab;
     EditToneTab editTone1Tab;
     EditToneTab editTone2Tab;
