@@ -8,6 +8,8 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 // Nuked-SC55-derived cores like this one emulate the real chip's output level bit-for-bit
@@ -75,6 +77,69 @@ VirtualJVProcessor::VirtualJVProcessor()
                  loadedRoms[getRomIndex("jv880_waverom1.bin")],
                  loadedRoms[getRomIndex("jv880_waverom2.bin")],
                  loadedRoms[getRomIndex("jv880_nvram.bin")]);
+
+  // Headless self-test for the native Performance Temp NVRAM hunt (see CLAUDE.md's "Piste
+  // future" section) - drives the emulator's own tick function directly instead of going through
+  // a real audio device, so it works even with no audio backend available (e.g. this sandbox).
+  // Exits before any window/audio device is created, so it needs no display either. Temporary
+  // investigation tool, not part of the plugin's normal behavior.
+  if (const char *selfTestButtonEnv = std::getenv("JV880_SELFTEST_BUTTON")) {
+    // Comma-separated button ids, pressed one after another (e.g. "10,11" = PATCH_PERFORM then
+    // EDIT), each held for holdMs and separated by a postMs settle period.
+    const int preMs = std::getenv("JV880_SELFTEST_PRE_MS") ? std::atoi(std::getenv("JV880_SELFTEST_PRE_MS")) : 3000;
+    const int holdMs = std::getenv("JV880_SELFTEST_HOLD_MS") ? std::atoi(std::getenv("JV880_SELFTEST_HOLD_MS")) : 150;
+    const int postMs = std::getenv("JV880_SELFTEST_POST_MS") ? std::atoi(std::getenv("JV880_SELFTEST_POST_MS")) : 3000;
+
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+
+    std::fprintf(stderr, "[selftest] booting %d ms...\n", preMs);
+    runMs(preMs);
+
+    if (auto *f = std::fopen("/tmp/jv880_nvram_before.bin", "wb")) {
+      std::fwrite(mcu->nvram, 1, sizeof(mcu->nvram), f);
+      std::fclose(f);
+    }
+
+    // Tokens are either a plain button id ("10") or "e0"/"e1" for one MCU_EncoderTrigger pulse
+    // in that direction (the data entry dial has no button id of its own).
+    juce::StringArray tokens;
+    tokens.addTokens(juce::String(selfTestButtonEnv), ",", "");
+    for (auto &rawTok : tokens) {
+      auto tok = rawTok.trim();
+      if (tok.startsWithIgnoreCase("e")) {
+        const int dir = tok.substring(1).getIntValue();
+        std::fprintf(stderr, "[selftest] encoder pulse dir=%d\n", dir);
+        mcu->MCU_EncoderTrigger(dir);
+      } else {
+        const int buttonId = tok.getIntValue();
+        std::fprintf(stderr, "[selftest] pressing button %d for %d ms\n", buttonId, holdMs);
+        mcu->lcd.LCD_SendButton((uint8_t)buttonId, 1);
+        runMs(holdMs);
+        mcu->lcd.LCD_SendButton((uint8_t)buttonId, 0);
+      }
+      std::fprintf(stderr, "[selftest] settling %d ms\n", postMs);
+      runMs(postMs);
+    }
+
+    if (auto *f = std::fopen("/tmp/jv880_nvram_after.bin", "wb")) {
+      std::fwrite(mcu->nvram, 1, sizeof(mcu->nvram), f);
+      std::fclose(f);
+    }
+
+    std::fprintf(stderr, "[selftest] done, exiting\n");
+    std::exit(0);
+  }
 
   int currentPatchI = 0;
 

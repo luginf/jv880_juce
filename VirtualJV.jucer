@@ -44,6 +44,8 @@
         <FILE id="m3M1A9" name="PatchBrowser.h" compile="0" resource="0" file="Source/ui/PatchBrowser.h"/>
         <FILE id="Pf6Tab" name="PerformanceTab.cpp" compile="1" resource="0" file="Source/ui/PerformanceTab.cpp"/>
         <FILE id="Pf7Tab" name="PerformanceTab.h" compile="0" resource="0" file="Source/ui/PerformanceTab.h"/>
+        <FILE id="It8Fac" name="InterfaceTab.cpp" compile="1" resource="0" file="Source/ui/InterfaceTab.cpp"/>
+        <FILE id="It9Fac" name="InterfaceTab.h" compile="0" resource="0" file="Source/ui/InterfaceTab.h"/>
         <FILE id="Xb1Kc5" name="SettingsTab.cpp" compile="1" resource="0" file="Source/ui/SettingsTab.cpp"/>
         <FILE id="IRgLIQ" name="SettingsTab.h" compile="0" resource="0" file="Source/ui/SettingsTab.h"/>
       </GROUP>

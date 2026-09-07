@@ -32,6 +32,7 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <chrono>
 #include <cmath>
@@ -804,6 +805,15 @@ uint32_t MCU::MCU_Read32(uint32_t address)
     return (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
 }
 
+// Set JV880_TRACE_NVRAM (any value) to log every NVRAM byte that actually changes, e.g. while
+// manually pressing PATCH/PERFORM in the Interface tab - used to hunt for the native Performance
+// Temp NVRAM area (see CLAUDE.md's "Piste future" section). Checked once, not on a hot path.
+static bool MCU_NvramTraceEnabled()
+{
+    static const bool enabled = (getenv("JV880_TRACE_NVRAM") != nullptr);
+    return enabled;
+}
+
 void MCU::MCU_Write(uint32_t address, uint8_t value)
 {
     uint8_t page = (address >> 16) & 0xf;
@@ -928,6 +938,12 @@ void MCU::MCU_Write(uint32_t address, uint8_t value)
     }
     else if (page == 12 && mcu_jv880)
     {
+        if (MCU_NvramTraceEnabled())
+        {
+            uint8_t oldValue = nvram[address & 0x7fff];
+            if (oldValue != value)
+                fprintf(stderr, "[nvram] %04x: %02x -> %02x\n", address & 0x7fff, oldValue, value);
+        }
         nvram[address & 0x7fff] = value; // FIXME
     }
     else if (page == 14 && mcu_jv880)

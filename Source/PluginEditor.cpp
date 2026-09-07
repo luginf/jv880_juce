@@ -16,7 +16,7 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     : AudioProcessorEditor(&p), processor(p),
       lcd(p), tabs(), patchBrowser(p), performanceTab(p), editCommonTab(p),
       editTone1Tab(p, this, 0U), editTone2Tab(p, this, 1U), editTone3Tab(p, this, 2U), editTone4Tab(p, this, 3U), editRhythmTab(p, this),
-      settingsTab(p), virtualKeyboard(p)
+      settingsTab(p), interfaceTab(p), virtualKeyboard(p)
 {
     addAndMakeVisible(lcd);
     addAndMakeVisible(tabs);
@@ -54,6 +54,7 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
     pinInViewport(editTone4Viewport, editTone4Tab);
     pinInViewport(editRhythmViewport, editRhythmTab);
     pinInViewport(settingsViewport, settingsTab);
+    pinInViewport(interfaceViewport, interfaceTab);
 
     // Height is free to shrink well below the default: the tabs area scrolls (PatchBrowser's
     // ListBoxes natively, the other tabs via the Viewports above) rather than clipping. Width
@@ -149,6 +150,7 @@ void VirtualJVEditor::showToneOrRhythmEditTabs(const bool isRhythm)
         tabs.addTab("Common", bgColor, &editCommonViewport, false);
         tabs.addTab("Rhythm Set", bgColor, &editRhythmViewport, false);
         tabs.addTab("Settings", bgColor, &settingsViewport, false);
+        tabs.addTab("Interface", bgColor, &interfaceViewport, false);
     }
     else
     {
@@ -160,6 +162,7 @@ void VirtualJVEditor::showToneOrRhythmEditTabs(const bool isRhythm)
         tabs.addTab("Tone 3", bgColor, &editTone3Viewport, false);
         tabs.addTab("Tone 4", bgColor, &editTone4Viewport, false);
         tabs.addTab("Settings", bgColor, &settingsViewport, false);
+        tabs.addTab("Interface", bgColor, &interfaceViewport, false);
     }
 
     // just in case... - index 3 is "Rhythm Set" in the isRhythm branch (Browse=0, Performance=1,

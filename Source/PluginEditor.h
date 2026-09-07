@@ -18,6 +18,7 @@
 #include "ui/widgets/VirtualKeyboard.h"
 #include "ui/PatchBrowser.h"
 #include "ui/PerformanceTab.h"
+#include "ui/InterfaceTab.h"
 #include "ui/EditCommonTab.h"
 #include "ui/EditToneTab.h"
 #include "ui/EditRhythmTab.h"
@@ -68,12 +69,13 @@ private:
     EditToneTab editTone4Tab;
     EditRhythmTab editRhythmTab;
     SettingsTab settingsTab;
+    InterfaceTab interfaceTab;
     CollapseHandle keyboardHandle;
     VirtualKeyboard virtualKeyboard;
     bool keyboardCollapsed = false;
 
     juce::Viewport editCommonViewport, editTone1Viewport, editTone2Viewport, editTone3Viewport,
-                   editTone4Viewport, editRhythmViewport, settingsViewport;
+                   editTone4Viewport, editRhythmViewport, settingsViewport, interfaceViewport;
 
     // showToneOrRhythmEditTabs() tears down and rebuilds the whole TabbedComponent (clearTabs()
     // + re-addTab() for every tab) - fine when the tone/rhythm mode actually changes, but

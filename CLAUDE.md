@@ -134,3 +134,91 @@ au lieu du clone à 4 moteurs parallèles décrit ci-dessus. Pistes de départ p
 
 Ce n'est pas un chantier ouvert actuellement - à reprendre seulement si Alan le demande
 explicitement.
+
+#### Outils construits pour cette RE (2026-09-07)
+
+Deux outils dormants (aucun coût quand désactivés) ajoutés pour permettre cette investigation
+sans deviner :
+
+- **Traçage NVRAM** (`Source/emulator/mcu.cpp`, `MCU_NvramTraceEnabled()` + le point d'écriture
+  NVRAM dans `MCU::MCU_Write`, page 12) : avec `JV880_TRACE_NVRAM=1` dans l'environnement, chaque
+  octet de `nvram[]` qui change de valeur est loggé sur stderr (`[nvram] xxxx: aa -> bb`).
+  Vérifié une seule fois au premier appel (`static const bool`), donc sans coût quand la variable
+  n'est pas définie.
+- **Self-test headless** (`Source/PluginProcessor.cpp`, juste après `mcu->startSC55(...)` dans le
+  constructeur de `VirtualJVProcessor`) : avec `JV880_SELFTEST_BUTTON=<séquence>` dans
+  l'environnement, fait tourner l'émulateur (via `mcu->updateSC55WithSampleRate()`, en boucle,
+  sans passer par un vrai périphérique audio ni par une fenêtre) pendant `JV880_SELFTEST_PRE_MS`
+  ms (défaut 3000, laisse le firmware terminer son boot), puis exécute la séquence
+  (identifiants `MCU_BUTTON_*` séparés par des virgules, ex. `10,11` = PATCH_PERFORM puis EDIT ;
+  un token `e0`/`e1` déclenche une impulsion `MCU_EncoderTrigger` du dial data au lieu d'un
+  bouton), chaque étape tenue `JV880_SELFTEST_HOLD_MS` ms (défaut 150) puis suivie d'un settle de
+  `JV880_SELFTEST_POST_MS` ms (défaut 3000), écrit un snapshot NVRAM avant/après dans
+  `/tmp/jv880_nvram_{before,after}.bin`, puis `exit(0)` - donc utilisable sans Xvfb (le
+  constructeur du processor tourne avant toute création de fenêtre). Exemple :
+  ```
+  JV880_TRACE_NVRAM=1 JV880_SELFTEST_BUTTON=10,11 JV880_SELFTEST_PRE_MS=2000 \
+  JV880_SELFTEST_HOLD_MS=150 JV880_SELFTEST_POST_MS=1500 \
+  ./Builds/LinuxMakefile/build/jv880
+  ```
+
+**Résultat obtenu jusqu'ici** : appuyer sur `MCU_BUTTON_PATCH_PERFORM` (10) fait basculer
+`nvram[0x11]` de `01` à `00` - exactement l'octet que ce projet écrit déjà "à la main"
+(`mcu->nvram[0x11] = status.isDrums ? 0 : 1` dans `PluginProcessor.cpp`) pour choisir entre Patch
+Temp et Rhythm Temp. C'est donc bien un flag de mode réel du firmware, pas une simple coïncidence
+d'offset. En revanche, enchaîner EDIT (11), plusieurs CURSOR_R (1) et deux impulsions d'encodeur
+(`e1`) après le PATCH/PERFORM n'a produit **aucune autre écriture NVRAM** dans ce test rapide - la
+vraie zone "Performance Temp" à 8 parties n'a pas encore été localisée. Pistes à essayer pour la
+suite : d'autres enchaînements de boutons (peut-être qu'il faut rester plus longtemps sur EDIT
+avant que l'encodeur soit pris en compte, ou qu'un champ précis doive être sélectionné avant que
+DATA ne fasse quelque chose), ou repartir sur la piste du traçage des accès mémoire du CPU émulé
+plutôt que seulement les écritures NVRAM (la position du curseur ou les data de travail
+pourraient vivre en RAM système `sram`/`ram`, jamais persistées, avant qu'une vraie valeur ne soit
+validée).
+
+### Onglet Interface (2026-09-07)
+
+Nouvel onglet **Interface**, en dernière position dans les deux configurations de la
+`TabbedComponent` (`Source/PluginEditor.cpp`), implémenté dans `Source/ui/InterfaceTab.h/.cpp`.
+Contrairement à tous les autres onglets (qui éditent les données du patch/rythme directement en
+mémoire, en court-circuitant le firmware - voir plus haut), celui-ci pilote le **vrai** chemin
+d'entrée du firmware émulé :
+
+- Les 14 boutons du panneau JV-880 (`MCU_BUTTON_CURSOR_L/R`, `TONE_SELECT`, `MUTE`, `DATA`,
+  `MONITOR`, `COMPARE`, `ENTER`, `UTILITY`, `PREVIEW`, `PATCH_PERFORM`, `EDIT`, `SYSTEM`,
+  `RHYTHM` - voir l'enum dans `Source/emulator/mcu.h`), chacun un bouton "momentané"
+  (`InterfaceTab::PanelButton`, sous-classe de `juce::TextButton` qui appuie/relâche
+  `processor.mcu->lcd.LCD_SendButton(id, état)` sur `mouseDown`/`mouseUp` - cette fonction
+  existait déjà dans `lcd.cpp` mais n'était appelée nulle part avant cet ajout).
+- Le dial data entry du panneau (rotatif sur le vrai JV-880, pas un slider) : deux boutons
+  "Data -"/"Data +" (`InterfaceTab::DialButton`) qui envoient chacun une impulsion
+  `processor.mcu->MCU_EncoderTrigger(dir)` par clic - autre fonction déjà présente
+  (`Source/emulator/mcu.cpp`) mais jamais appelée avant cet ajout.
+- L'écran LCD déjà affiché en permanence au-dessus des onglets (`LCDisplay`, toujours visible
+  quel que soit l'onglet actif) réagit donc en direct aux appuis simulés depuis cet onglet.
+
+Aucune synchronisation ajoutée pour ces écritures (`mcu_button_pressed`, un simple `uint32_t`) -
+cohérent avec le reste du projet, qui touche déjà `mcu`/`nvram` depuis le thread UI sans lock nulle
+part.
+
+Sert un double usage : (1) outil d'investigation pour la RE du mode Performance natif ci-dessus,
+et (2) à terme, chemin d'accès générique à tout écran firmware qui n'a pas (ou n'aura jamais)
+d'équivalent en écriture NVRAM directe.
+
+**Disposition (2026-09-07, suite au retour d'Alan avec une photo du panneau réel)** : les
+boutons sont maintenant rangés dans l'ordre de lecture du vrai panneau (gauche→droite,
+haut→bas), pas dans l'ordre de l'enum `MCU_BUTTON_*` : cluster Data Entry Dial en haut (bouton
+push du dial + Data -/+), puis rangée Patch/Perform, Edit, System, Rhythm, Utility, puis Cursor
+</>, Tone Select, puis Mute, Monitor, Info/Compare, Enter, puis Preview (qui sur le vrai panneau
+est en fait la pression du bouton VOLUME, pas un bouton séparé - gardé seul en bas en attendant
+un vrai skin). `MCU_BUTTON_DATA` (le bouton-poussoir du dial data lui-même, distinct de sa
+rotation) n'a plus de bouton momentané dédié : le manuel d'origine (p.49,
+https://cdn.roland.com/assets/media/pdf/JV-880_OM.pdf) documente "hold down and rotate the DATA
+dial" comme un geste à part, impossible à reproduire avec un simple clic-relâché - remplacé par
+une coche **"Hold DATA while rotating"** qui maintient `MCU_BUTTON_DATA` enfoncé
+(`LCD_SendButton(MCU_BUTTON_DATA, 1)`) tant qu'elle est cochée, le temps de cliquer Data -/+.
+
+**À faire plus tard (pas urgent, sur demande d'Alan)** : reprendre cette interface avec un vrai
+skin (image du panneau JV-880 en fond, boutons superposés aux vraies positions/formes) plutôt que
+la grille de `juce::TextButton` actuelle - purement cosmétique, aucun changement de mécanisme
+(`LCD_SendButton`/`MCU_EncoderTrigger` restent les mêmes peu importe le rendu visuel).
