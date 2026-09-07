@@ -8,6 +8,48 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3.3.0
+      with:
+        fetch-depth: 0
+        submodules: recursive
+    - name: "Install Linux build dependencies"
+      run: |
+           sudo apt-get update
+           sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk \
+             libcurl4-openssl-dev libfreetype6-dev libfontconfig1-dev \
+             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+             libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
+    - name: "Download Projucer"
+      run: |
+           git clone -b 8.0.7 --depth 1 https://github.com/juce-framework/JUCE JUCE
+           bash -ex ./build/download-projucer.sh
+      shell: bash
+      env:
+        OS: linux
+    - name: "Build jv880"
+      run: bash -ex ./build/build-linux.sh
+    - name: "Build .deb"
+      run: bash -ex ./build/build-deb.sh
+    - name: "zip Linux"
+      run: |
+           cd ./Builds/LinuxMakefile/build
+           zip -r jv880.vst3.linux.zip jv880.vst3
+           zip -r jv880.lv2.linux.zip jv880.lv2
+           cp jv880 jv880.linux
+           cd -
+      shell: bash
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: jv880-linux
+        path: |
+              ./Builds/LinuxMakefile/build/jv880.vst3.linux.zip
+              ./Builds/LinuxMakefile/build/jv880.lv2.linux.zip
+              ./Builds/LinuxMakefile/build/jv880.linux
+              ./build/*.deb
   build-win:
     runs-on: windows-2022
     steps:
@@ -67,7 +109,7 @@ jobs:
               ./Builds/MacOSX/build/Release/jv880.app.macOS.zip
   release:
     name: "Release"
-    needs: [build-win, build-osx]
+    needs: [build-linux, build-win, build-osx]
     if: github.ref == 'refs/heads/main'
     runs-on: "ubuntu-latest"
     steps:
