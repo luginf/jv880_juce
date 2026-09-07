@@ -82,12 +82,11 @@ jobs:
       # Contents/Resources/moduleinfo.json), not a flat file - uploading it raw got flattened by
       # the release job's merge-multiple, scattering moduleinfo.json loose and leaving a bare
       # "jv880.vst3" that was really just the inner DLL, not a valid bundle. Zip it like the
-      # macOS/Linux jobs already do for their own bundles.
-      run: |
-           cd "./Builds/VisualStudio2022/x64/Release/VST3"
-           zip -r jv880.vst3.windows.zip jv880.vst3
-           cd -
-      shell: bash
+      # macOS/Linux jobs already do for their own bundles - `zip` itself isn't available in the
+      # windows-2022 runner's Git-Bash, so PowerShell's Compress-Archive instead (needs the -Path
+      # itself, not just its parent, since Git-Bash's cd above doesn't carry over to this step).
+      run: Compress-Archive -Path "./Builds/VisualStudio2022/x64/Release/VST3/jv880.vst3" -DestinationPath "./Builds/VisualStudio2022/x64/Release/VST3/jv880.vst3.windows.zip"
+      shell: pwsh
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
