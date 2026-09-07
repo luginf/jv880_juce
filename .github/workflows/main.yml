@@ -122,6 +122,12 @@ jobs:
     needs: [build-linux, build-win, build-osx]
     if: github.ref == 'refs/heads/main'
     runs-on: "ubuntu-latest"
+    # This repo's default GITHUB_TOKEN permissions are read-only (Settings > Actions > General),
+    # which made action-automatic-releases fail with "Resource not accessible by integration" -
+    # explicitly requesting contents:write here overrides that default for just this job, rather
+    # than loosening every job's token repo-wide.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v3.3.0
       - name: Retrieve artifacts
