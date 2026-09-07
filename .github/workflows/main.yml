@@ -133,10 +133,14 @@ jobs:
       - name: Retrieve artifacts
         uses: actions/download-artifact@v4
         with:
-          path: build
+          # A directory that doesn't already exist in the checked-out repo - `path: build` used
+          # to land the downloaded binaries in the very same build/ that actions/checkout just
+          # populated with this repo's own tracked *.sh scripts, and files: build/**/* below
+          # swept those up into the release alongside the real assets.
+          path: dist
           pattern: jv880-*
           merge-multiple: true
-      - run: ls -R build
+      - run: ls -R dist
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
@@ -144,4 +148,4 @@ jobs:
           automatic_release_tag: latest
           title: jv880 Latest
           files: |
-            build/**/*
+            dist/**/*
