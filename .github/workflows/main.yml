@@ -9,7 +9,10 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04
+    # JUCE 8.0.7's prebuilt Linux Projucer binary needs glibc >= 2.38 (confirmed by a failed run:
+    # ubuntu-22.04's glibc 2.35 is too old, hence 24.04 here rather than the more conservative
+    # 22.04 the other jobs might have used).
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v3.3.0
       with:
