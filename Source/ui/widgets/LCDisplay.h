@@ -64,6 +64,9 @@ private:
 
     RedrawTimer redrawTimer;
     Color lcdColor;
+    juce::Image lcdImage; // owned/reused across paint() calls (Alan's report, 2026-09-08: DSP
+                           // Load regression) instead of allocating a fresh 820x100 ARGB image
+                           // from scratch 25x/second.
 
     VirtualJVProcessor& processor;
 

@@ -331,13 +331,34 @@ void PanelSkin::timerCallback()
     if (!isVisible())
         return;
 
-    // The live LCD render is only relevant (and only drawn) for variants with an LCD opening -
-    // no point copying an 820x100 bitmap 25 times a second for kCommands, which never draws it.
-    // The timer itself still runs unconditionally while visible (see setVariant()) so the LEDs
-    // stay live there too.
+    // Still not enough on its own (Alan's follow-up report, 2026-09-08: DSP Load stayed >60% even
+    // for the one legitimately-visible component) - repaint() here was invalidating the WHOLE
+    // component, so every tick re-composited the large static background photo (up to 3280x304)
+    // just to refresh a handful of small live bits inside it. Narrowed to just those bits' own
+    // rects instead - JUCE clips paint()'s actual drawing to the union of invalidated rects, so
+    // the background photo's own g.drawImage() call in paint() below becomes a cheap no-op
+    // outside them, even though paint() itself still runs in full.
+    juce::Rectangle<int> dirty;
     if (variant.hasLcdAndVolume)
+    {
         rebuildLcdImage();
-    repaint();
+        dirty = refRectToComponent(kLcdX, kLcdY, kLcdW, kLcdH).getSmallestIntegerContainer();
+    }
+
+    // Only PATCH/PERFORM's LED (firmware-read, kButtons[0]) and the 4 TONE SWITCH LEDs
+    // (firmware-read, kButtons[8..11]) can change without a mouse click on this component - the
+    // other four mode-button LEDs (kButtons[1..4]) only change from mouseDown, which already
+    // triggers its own repaint(), so they don't need to be part of this continuous 25Hz set.
+    for (int i : {0, 8, 9, 10, 11})
+        dirty = dirty.getUnion(ledRect(i).getSmallestIntegerContainer());
+
+    repaint(dirty);
+}
+
+juce::Rectangle<float> PanelSkin::ledRect(int buttonIndex) const
+{
+    auto &b = kButtons[buttonIndex];
+    return refRectToComponent(b.x + (b.w - kLedW) * 0.5f, b.y - kLedH * 0.5f + kLedYOffset, kLedW, kLedH);
 }
 
 // Same source as LCDisplay::paint() (processor.mcu->lcd.LCD_Update(), an 1024x1024 offscreen
@@ -353,8 +374,13 @@ void PanelSkin::rebuildLcdImage()
     if (!bitmapResult)
         return;
 
-    for (size_t i = 0; i < 1024 * 1024; i++)
-        bitmapResult[i * 4 + 3] = 0xff;
+    // Only the top-left 820x100 of the 1024x1024 buffer is ever live content (see this method's
+    // own comment) - the alpha fixup below used to run over the full 1024x1024 regardless (over
+    // 1 million writes/tick for nothing - Alan's report, 2026-09-08), scoped down to just the
+    // 820x100 actually copied afterwards.
+    for (int y = 0; y < 100; y++)
+        for (int x = 0; x < 820; x++)
+            bitmapResult[(y * 1024 + x) * 4 + 3] = 0xff;
 
     if (!lcdImage.isValid() || lcdImage.getWidth() != 820 || lcdImage.getHeight() != 100)
         lcdImage = juce::Image(juce::Image::PixelFormat::ARGB, 820, 100, false);
@@ -390,11 +416,8 @@ void PanelSkin::paint(juce::Graphics &g)
     {
         auto drawLed = [&](int buttonIndex)
         {
-            auto &b = kButtons[buttonIndex];
-            auto ledRect = refRectToComponent(b.x + (b.w - kLedW) * 0.5f,
-                                              b.y - kLedH * 0.5f + kLedYOffset, kLedW, kLedH);
             g.setColour(juce::Colours::red);
-            g.fillRoundedRectangle(ledRect, 1.5f);
+            g.fillRoundedRectangle(ledRect(buttonIndex), 1.5f);
         };
         if (processor.loaded && processor.mcu)
         {

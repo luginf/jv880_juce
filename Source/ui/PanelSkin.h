@@ -114,6 +114,8 @@ private:
     // the label gap - it should instead sit mostly ON the button, right at its top boundary,
     // without poking up past it the way it did before).
     static constexpr float kLedW = 14.0f, kLedH = 7.0f, kLedYOffset = 2.0f;
+    juce::Rectangle<float> ledRect(int buttonIndex) const; // component space - shared by paint()
+                                                             // and timerCallback()'s targeted repaint()
 
     // PATCH/PERFORM's own LED (kButtons[0]): nvram[0x11] != 0 (Patch mode) - the Owner's Manual's
     // own words, "the indicator lights up when Patch mode is selected" - same flag

@@ -36,20 +36,25 @@ void LCDisplay::paint(juce::Graphics &g)
     return;
   }
 
-  for (size_t i = 0; i < 1024 * 1024; i++)
+  // Only the top-left 820x100 of the 1024x1024 buffer is ever live content (the rest is unused
+  // offscreen scratch) - this alpha fixup used to run over the full 1024x1024 regardless (over 1
+  // million writes/tick for nothing - Alan's report, 2026-09-08), scoped down to just the 820x100
+  // actually copied below.
+  for (int y = 0; y < 100; y++)
+    for (int x = 0; x < 820; x++)
+      bitmapResult[(y * 1024 + x) * 4 + 3] = 0xff;
+
+  // Reused across calls instead of allocating a fresh Image every tick (same report as above).
+  if (!lcdImage.isValid() || lcdImage.getWidth() != 820 || lcdImage.getHeight() != 100)
+    lcdImage = juce::Image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+
   {
-    bitmapResult[i * 4 + 3] = 0xff;
+    juce::Image::BitmapData pixelMap(lcdImage, juce::Image::BitmapData::readWrite);
+    for (int y = 0; y < pixelMap.height; y++)
+      memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
   }
 
-  juce::Image image = {juce::Image::PixelFormat::ARGB, 820, 100, false};
-  juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
-
-  for (int y = 0; y < pixelMap.height; y++)
-  {
-    memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
-  }
-
-  g.drawImageAt(image, 0, 0);
+  g.drawImageAt(lcdImage, 0, 0);
 }
 
 void LCDisplay::setLCDColor(const Color color)
