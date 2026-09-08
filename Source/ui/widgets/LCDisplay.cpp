@@ -14,7 +14,10 @@
 //==============================================================================
 LCDisplay::LCDisplay(VirtualJVProcessor &p) : redrawTimer(this), processor(p)
 {
-  redrawTimer.startTimerHz(25);
+  // 10Hz, not 25Hz (Alan's request, 2026-09-08, as part of the DSP Load investigation - a
+  // dot-matrix info screen doesn't need to look "live" at 25Hz, and fewer message-thread ticks
+  // means fewer chances to contend with the audio thread for CPU/scheduling).
+  redrawTimer.startTimerHz(10);
 
   if (processor.loaded)
   {

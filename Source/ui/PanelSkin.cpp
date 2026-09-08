@@ -63,8 +63,9 @@ void PanelSkin::setVariant(Variant v)
 
     // Runs regardless of variant now (Alan's request, 2026-09-08 added the LED indicators, which
     // need live refreshing in every variant - not just the live-LCD ones) - see timerCallback()'s
-    // own comment for why rebuildLcdImage() itself stays conditional.
-    startTimerHz(25);
+    // own comment for why rebuildLcdImage() itself stays conditional. 10Hz, not 25Hz (Alan's
+    // request, 2026-09-08, DSP Load investigation - same reasoning as LCDisplay's own timer).
+    startTimerHz(10);
 
     resized();
     repaint();
