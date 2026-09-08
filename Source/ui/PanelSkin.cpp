@@ -320,10 +320,21 @@ void PanelSkin::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheel
 
 void PanelSkin::timerCallback()
 {
+    // Skip all work while hidden (Alan's report, 2026-09-08: DSP Load pegged at 70%+ at idle,
+    // same whether Display mode was LCD only or Panel - root cause was this timer calling
+    // rebuildLcdImage() unconditionally even when this exact component was the hidden one, e.g.
+    // the main window's own `panelDisplay` sitting invisible behind the plain LCD strip in LCD-
+    // only mode, or this same component sitting on a Panel tab that isn't the selected one.
+    // repaint() alone is already a no-op on a hidden component - JUCE's own paint pipeline skips
+    // it - but rebuildLcdImage() bypasses that entirely by calling LCD_Update() directly instead
+    // of from paint(), so it needed its own explicit visibility check.
+    if (!isVisible())
+        return;
+
     // The live LCD render is only relevant (and only drawn) for variants with an LCD opening -
     // no point copying an 820x100 bitmap 25 times a second for kCommands, which never draws it.
-    // The timer itself still runs unconditionally (see setVariant()) so the LEDs stay live there
-    // too.
+    // The timer itself still runs unconditionally while visible (see setVariant()) so the LEDs
+    // stay live there too.
     if (variant.hasLcdAndVolume)
         rebuildLcdImage();
     repaint();
