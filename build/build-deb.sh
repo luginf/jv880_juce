@@ -62,7 +62,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: Giulio Zausa
-Homepage: https://github.com/giulioz/jv880_juce
+Homepage: https://github.com/luginf/virtual-jv-880
 Depends: libasound2, libfreetype6, libfontconfig1, libcurl4, libx11-6, libxext6, libxrender1, libxrandr2, libxinerama1, libxcursor1
 Description: VirtualJV - Roland JV-880 emulator
  Emulator of the Roland JV-880 rompler synthesizer, based on Nuked-SC55.

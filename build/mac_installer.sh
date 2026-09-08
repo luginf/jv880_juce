@@ -10,7 +10,7 @@ prep() {
 }
 
 # Variables
-REPO_URL="https://github.com/giulioz/jv880_juce/releases/download/latest"
+REPO_URL="https://github.com/luginf/virtual-jv-880/releases/download/latest"
 TMP_DIR="/tmp/jv880_install"
 mkdir -p "$TMP_DIR"
 

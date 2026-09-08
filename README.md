@@ -1,6 +1,8 @@
 # Virtual JV-880
 
-Emulator of a famous 1U rack unit rompler made by Roland in 1992, as a VST3 and AU plugin. Based on [NukeYKT's SC55](https://github.com/nukeykt/Nuked-SC55).
+Emulator of a famous 1U rack unit rompler made by Roland in 1992, as a VST3 and AU plugin, as well as standalone.
+
+Based on [NukeYKT's SC55](https://github.com/nukeykt/Nuked-SC55) and on [https://github.com/giulioz/jv880_juce](https://github.com/giulioz/jv880_juce)
 
 
 ![New GUI](./Assets/readme/jv880.png)
@@ -22,7 +24,7 @@ The [DOCS.md](DOCS.md) for this emulation.
 
 ## Plugin downloads
 
-- [https://github.com/luginf/jv880_juce/releases](https://github.com/luginf/jv880_juce/releases)
+- [https://github.com/luginf/virtual-jv-880/releases](https://github.com/luginf/virtual-jv-880/releases)
 
 
 **NOTE (Windows)**: If you are having troubles with Windows 10, it's possible you need to install the [Visual C++ 2022 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-microsoft-visual-c-redistributable-version).
