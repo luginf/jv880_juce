@@ -77,6 +77,33 @@ void savePersistedRomFolderOverride(const juce::File &dir) {
   file.getParentDirectory().createDirectory();
   file.replaceWithText(dir.getFullPathName());
 }
+
+// Display mode persistence (Alan's request, 2026-09-08) - same fixed-location-regardless-of-
+// content reasoning as romFolderSettingsFile() above (not that this one's content ever names a
+// path, but consistency).
+juce::File displayModeSettingsFile() {
+  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      .getChildFile("JV880")
+      .getChildFile("display_mode.txt");
+}
+
+VirtualJVProcessor::DisplayMode loadPersistedDisplayMode() {
+  auto file = displayModeSettingsFile();
+  if (!file.existsAsFile())
+    return VirtualJVProcessor::DisplayMode::LcdOnly;
+  auto n = file.loadFileAsString().trim().getIntValue();
+  if (n == (int)VirtualJVProcessor::DisplayMode::PanelCompact)
+    return VirtualJVProcessor::DisplayMode::PanelCompact;
+  if (n == (int)VirtualJVProcessor::DisplayMode::PanelFull)
+    return VirtualJVProcessor::DisplayMode::PanelFull;
+  return VirtualJVProcessor::DisplayMode::LcdOnly;
+}
+
+void savePersistedDisplayMode(VirtualJVProcessor::DisplayMode mode) {
+  auto file = displayModeSettingsFile();
+  file.getParentDirectory().createDirectory();
+  file.replaceWithText(juce::String((int)mode));
+}
 } // namespace
 
 //==============================================================================
@@ -87,6 +114,7 @@ VirtualJVProcessor::VirtualJVProcessor()
               .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
 
   loadPersistedKeyboardSettings(keyboardPcInput, keyboardPcLayout);
+  displayMode = loadPersistedDisplayMode();
 
   ownedNames.reserve(52);
 
@@ -175,6 +203,174 @@ bool VirtualJVProcessor::attemptLoadRoms() {
     }
 
     std::fprintf(stderr, "[selftest] done, exiting\n");
+    std::exit(0);
+  }
+
+  // Temporary RE tool (2026-09-08): two follow-up questions from Alan's LED-photo report - (1)
+  // do EDIT/SYSTEM/RHYTHM/UTILITY have a clean single "current screen" flag the same way PATCH/
+  // PERFORM's nvram[0x11] does (JV880_SELFTEST_LED below found candidates sram[0xb5]/sram[0xde]
+  // mixed in with a pile of LCD-text-buffer noise for EDIT alone, not yet checked against the
+  // other three mode buttons), and (2) does holding DATA while rotating actually produce a
+  // bigger parameter step than rotating alone, matching the Owner's Manual's own description of
+  // the gesture (p.49-ish, "faster changes... if you press the dial while turning it").
+  if (std::getenv("JV880_SELFTEST_DATAACCEL")) {
+    const int preMs = 3000, holdMs = 150, postMs = 800;
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+    auto pressButton = [&](int id) {
+      mcu->lcd.LCD_SendButton((uint8_t)id, 1);
+      runMs(holdMs);
+      mcu->lcd.LCD_SendButton((uint8_t)id, 0);
+      runMs(postMs);
+    };
+    auto reportByte = [&](const char *label, uint32_t off) {
+      std::fprintf(stderr, "[selftest-dataaccel] %s: sram[0x%04x] = %02x\n", label, off, mcu->sram[off]);
+    };
+
+    std::fprintf(stderr, "[selftest-dataaccel] booting %d ms...\n", preMs);
+    runMs(preMs);
+
+    std::fprintf(stderr, "[selftest-dataaccel] --- mode-button candidate flags across EDIT/SYSTEM/RHYTHM/UTILITY ---\n");
+    reportByte("baseline", 0x00b5); reportByte("baseline", 0x00de);
+    pressButton(MCU_BUTTON_EDIT);
+    reportByte("after EDIT", 0x00b5); reportByte("after EDIT", 0x00de);
+    pressButton(MCU_BUTTON_SYSTEM);
+    reportByte("after SYSTEM", 0x00b5); reportByte("after SYSTEM", 0x00de);
+    pressButton(MCU_BUTTON_RHYTHM);
+    reportByte("after RHYTHM", 0x00b5); reportByte("after RHYTHM", 0x00de);
+    pressButton(MCU_BUTTON_UTILITY);
+    reportByte("after UTILITY", 0x00b5); reportByte("after UTILITY", 0x00de);
+    pressButton(MCU_BUTTON_PATCH_PERFORM);
+    reportByte("after PATCH_PERFORM (back to Patch Play)", 0x00b5); reportByte("after PATCH_PERFORM (back to Patch Play)", 0x00de);
+
+    std::fprintf(stderr, "[selftest-dataaccel] --- DATA hold-while-rotating acceleration ---\n");
+    auto dumpLcd = [&](const std::string &name) {
+      if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+        for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+        juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+        juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+        for (int y = 0; y < pixelMap.height; y++)
+          std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+        juce::PNGImageFormat png;
+        juce::File outFile("/tmp/jv880_dataaccel_" + name + ".png");
+        juce::FileOutputStream stream(outFile);
+        if (stream.openedOk()) { stream.setPosition(0); stream.truncate(); png.writeImageToStream(image, stream); }
+      }
+    };
+    auto dumpPatchTemp = [&](const char *label) {
+      // Patch Temp lives at nvram[0x0d70..0x0d70+0x16a) - see setCurrentProgram()'s own comment.
+      std::fprintf(stderr, "[selftest-dataaccel] %s: patchTemp[0..15] =", label);
+      for (int i = 0; i < 16; i++) std::fprintf(stderr, " %02x", mcu->nvram[0x0d70 + i]);
+      std::fprintf(stderr, "\n");
+    };
+
+    // Force Patch mode first (a stray persisted Performance-mode session would otherwise land
+    // EDIT on Perf:Common instead of Patch Common, throwing off patchTemp entirely).
+    std::fprintf(stderr, "[selftest-dataaccel] nvram[0x11] (mode byte) before = %02x\n", mcu->nvram[0x11]);
+    if (mcu->nvram[0x11] == 0) pressButton(MCU_BUTTON_PATCH_PERFORM);
+    pressButton(MCU_BUTTON_EDIT);
+    dumpLcd("00_edit");
+    pressButton(MCU_BUTTON_CURSOR_R);
+    dumpLcd("01_cursor");
+    dumpPatchTemp("before any turn");
+
+    mcu->MCU_EncoderTrigger(1);
+    runMs(postMs);
+    dumpLcd("02_after_plain_turn");
+    dumpPatchTemp("after 1 plain turn (no DATA held)");
+
+    mcu->lcd.LCD_SendButton(MCU_BUTTON_DATA, 1);
+    runMs(50);
+    mcu->MCU_EncoderTrigger(1);
+    runMs(postMs);
+    mcu->lcd.LCD_SendButton(MCU_BUTTON_DATA, 0);
+    runMs(postMs);
+    dumpLcd("03_after_held_turn");
+    dumpPatchTemp("after 1 turn WITH DATA held");
+
+    std::fprintf(stderr, "[selftest-dataaccel] done, exiting\n");
+    std::exit(0);
+  }
+
+  // Temporary RE tool (2026-09-08, Alan's report of small LEDs on TONE SWITCH/EDIT/SYSTEM/RHYTHM
+  // in the panel photo - wants TONE SWITCH's mute LEDs live) - like JV880_SELFTEST_BUTTON above
+  // but diffs nvram/sram/ram incrementally (previous step, not just the very first baseline) and
+  // dumps an LCD screenshot after every single button press, to find exactly which byte(s) light
+  // up for each one. JV880_SELFTEST_LED=<comma-separated MCU_BUTTON_* ids>.
+  if (const char *selfTestLedEnv = std::getenv("JV880_SELFTEST_LED")) {
+    const int preMs = 3000, holdMs = 150, postMs = 1000;
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+    auto dumpLcd = [&](const std::string &name) {
+      if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+        for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+        juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+        juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+        for (int y = 0; y < pixelMap.height; y++)
+          std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+        juce::PNGImageFormat png;
+        juce::File outFile("/tmp/jv880_led_" + name + ".png");
+        juce::FileOutputStream stream(outFile);
+        if (stream.openedOk()) { stream.setPosition(0); stream.truncate(); png.writeImageToStream(image, stream); }
+      }
+    };
+    std::vector<uint8_t> prevNvram(mcu->nvram, mcu->nvram + sizeof(mcu->nvram));
+    std::vector<uint8_t> prevSram(mcu->sram, mcu->sram + sizeof(mcu->sram));
+    std::vector<uint8_t> prevRam(mcu->ram, mcu->ram + sizeof(mcu->ram));
+    auto diffAndAdvance = [&](const std::string &label) {
+      for (size_t i = 0; i < sizeof(mcu->nvram); i++)
+        if (mcu->nvram[i] != prevNvram[i])
+          std::fprintf(stderr, "[selftest-led] %s: nvram[0x%04zx]: %02x -> %02x\n", label.c_str(), i, prevNvram[i], mcu->nvram[i]);
+      for (size_t i = 0; i < sizeof(mcu->sram); i++)
+        if (mcu->sram[i] != prevSram[i])
+          std::fprintf(stderr, "[selftest-led] %s: sram[0x%04zx]: %02x -> %02x\n", label.c_str(), i, prevSram[i], mcu->sram[i]);
+      for (size_t i = 0; i < sizeof(mcu->ram); i++)
+        if (mcu->ram[i] != prevRam[i])
+          std::fprintf(stderr, "[selftest-led] %s: ram[0x%04zx]: %02x -> %02x\n", label.c_str(), i, prevRam[i], mcu->ram[i]);
+      prevNvram.assign(mcu->nvram, mcu->nvram + sizeof(mcu->nvram));
+      prevSram.assign(mcu->sram, mcu->sram + sizeof(mcu->sram));
+      prevRam.assign(mcu->ram, mcu->ram + sizeof(mcu->ram));
+    };
+
+    std::fprintf(stderr, "[selftest-led] booting %d ms...\n", preMs);
+    runMs(preMs);
+    dumpLcd("00_boot");
+    diffAndAdvance("boot"); // establish the post-boot baseline (expect lots of noise, ignored)
+
+    juce::StringArray tokens;
+    tokens.addTokens(juce::String(selfTestLedEnv), ",", "");
+    int step = 1;
+    for (auto &rawTok : tokens) {
+      const int buttonId = rawTok.trim().getIntValue();
+      std::fprintf(stderr, "[selftest-led] step %d: pressing button %d\n", step, buttonId);
+      mcu->lcd.LCD_SendButton((uint8_t)buttonId, 1);
+      runMs(holdMs);
+      mcu->lcd.LCD_SendButton((uint8_t)buttonId, 0);
+      runMs(postMs);
+      dumpLcd(juce::String(step).paddedLeft('0', 2).toStdString() + "_btn" + std::to_string(buttonId));
+      diffAndAdvance("step" + std::to_string(step) + " (button " + std::to_string(buttonId) + ")");
+      step++;
+    }
+
+    std::fprintf(stderr, "[selftest-led] done, exiting\n");
     std::exit(0);
   }
 
@@ -848,6 +1044,15 @@ bool VirtualJVProcessor::retryLoadRoms() {
       e->romsBecameAvailable();
 
   return true;
+}
+
+void VirtualJVProcessor::setDisplayMode(DisplayMode mode) {
+  displayMode = mode;
+  savePersistedDisplayMode(mode);
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->refreshDisplayMode();
 }
 
 VirtualJVProcessor::~VirtualJVProcessor() {

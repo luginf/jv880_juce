@@ -146,6 +146,20 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
 
   refreshRomSection();
 
+  addAndMakeVisible(displaySectionHeaderLabel);
+  displaySectionHeaderLabel.setText("Display", juce::dontSendNotification);
+  displaySectionHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+
+  addAndMakeVisible(displayModeCombo);
+  displayModeCombo.addItem("LCD only", 1);
+  displayModeCombo.addItem("Panel (Compact)", 2);
+  displayModeCombo.addItem("Panel (Full)", 3);
+  displayModeCombo.setSelectedId((int)processor.displayMode + 1, juce::dontSendNotification);
+  displayModeCombo.onChange = [this]
+  {
+    processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
+  };
+
   startTimerHz(4);
 }
 
@@ -208,9 +222,14 @@ void SettingsTab::resized()
   masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
   dspLoadLabel      .setBounds(sliderLeft1 - 90, row2Top, width, height);
 
-  // ROM Folder section (Alan's request, 2026-09-08), between the DSP row and Audio/MIDI
-  // Settings - see refreshRomSection().
-  const auto romSectionTop = row2Top + height + 20;
+  // Display mode (Alan's request, 2026-09-08) - see PanelSkin.h/VirtualJVProcessor::DisplayMode.
+  const auto displaySectionTop = row2Top + height + 20;
+  displaySectionHeaderLabel.setBounds(10, displaySectionTop, 200, 22);
+  displayModeCombo.setBounds(220, displaySectionTop, 220, 24);
+
+  // ROM Folder section (Alan's request, 2026-09-08), between Display and Audio/MIDI Settings -
+  // see refreshRomSection().
+  const auto romSectionTop = displaySectionTop + 22 + 20;
   romSectionHeaderLabel.setBounds(10, romSectionTop, 400, 22);
   romStatusLabel.setBounds(10, romSectionTop + 24, getWidth() - 20, 36);
   romPathLabel.setBounds(10, romSectionTop + 62, getWidth() - 20, 20);

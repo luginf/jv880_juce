@@ -126,32 +126,35 @@ void LCDisplay::setLCDColor(const Color color)
 void LCDisplay::mouseDown(const juce::MouseEvent& e)
 {
     if (e.mods.isPopupMenu())
-    {
-        auto addItem = [this](juce::PopupMenu &menu, const std::string text, Color color)
-            {
-                menu.addItem(text, true, (lcdColor == color), [this, color]() { setLCDColor(color); });
-            };
+        showColorMenu();
+}
 
-        auto menu = juce::PopupMenu();
+void LCDisplay::showColorMenu()
+{
+    auto addItem = [this](juce::PopupMenu &menu, const std::string text, Color color)
+        {
+            menu.addItem(text, true, (lcdColor == color), [this, color]() { setLCDColor(color); });
+        };
 
-        addItem(menu, "Green", Color::Green);
-        addItem(menu, "Amber", Color::Amber);
-        addItem(menu, "Red", Color::Red);
-        addItem(menu, "Blue", Color::Blue);
-        addItem(menu, "White-Black", Color::WhiteBlack);
-        addItem(menu, "White-Blue", Color::WhiteBlue);
-        addItem(menu, "Black-White", Color::BlackWhite);
-        addItem(menu, "Black-Amber", Color::BlackAmber);
-        addItem(menu, "Black-Red", Color::BlackRed);
-        addItem(menu, "Black-Green", Color::BlackGreen);
-        addItem(menu, "Black-Blue", Color::BlackBlue);
-        addItem(menu, "VFD", Color::BlackVFD);
+    auto menu = juce::PopupMenu();
 
-        auto o = juce::PopupMenu::Options();
+    addItem(menu, "Green", Color::Green);
+    addItem(menu, "Amber", Color::Amber);
+    addItem(menu, "Red", Color::Red);
+    addItem(menu, "Blue", Color::Blue);
+    addItem(menu, "White-Black", Color::WhiteBlack);
+    addItem(menu, "White-Blue", Color::WhiteBlue);
+    addItem(menu, "Black-White", Color::BlackWhite);
+    addItem(menu, "Black-Amber", Color::BlackAmber);
+    addItem(menu, "Black-Red", Color::BlackRed);
+    addItem(menu, "Black-Green", Color::BlackGreen);
+    addItem(menu, "Black-Blue", Color::BlackBlue);
+    addItem(menu, "VFD", Color::BlackVFD);
 
-        o = o.withMousePosition().withPreferredPopupDirection(
-            juce::PopupMenu::Options::PopupDirection::downwards);
+    auto o = juce::PopupMenu::Options();
 
-        menu.showMenuAsync(o);
-    }
+    o = o.withMousePosition().withPreferredPopupDirection(
+        juce::PopupMenu::Options::PopupDirection::downwards);
+
+    menu.showMenuAsync(o);
 }

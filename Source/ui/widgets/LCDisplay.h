@@ -44,6 +44,12 @@ public:
     void mouseDown(const juce::MouseEvent & /* event */) override;
     void setLCDColor(const Color color);
 
+    // Extracted from mouseDown()'s own right-click handling (Alan's request, 2026-09-08) so
+    // PanelSkin's embedded live LCD (Panel Compact/Full display mode - see PanelSkin.h) can pop
+    // the exact same colour picker on a right-click over the photo's own LCD opening, instead of
+    // only being reachable through this always-820x100 standalone component.
+    void showColorMenu();
+
 private:
     class RedrawTimer : public juce::Timer
     {

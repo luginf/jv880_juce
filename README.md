@@ -1,8 +1,12 @@
-# VirtualJV
+# Virtual JV-880
 
 Emulator of a famous 1U rack unit rompler made by Roland in 1992, as a VST3 and AU plugin. Based on [NukeYKT's SC55](https://github.com/nukeykt/Nuked-SC55).
 
 You'll need ROMs to use this software. During the first run you will be able to open the destination ROM folder. Copy your ROMs there, restart the plugin, and wait for a minute for the first load to happen (waveform ROMs need to be descrambled and copied to a cache, which may take a minute). Have fun!
+
+You can get the ROMs at: 
+- [https://archive.org/download/roland-jv880-rom](https://archive.org/download/roland-jv880-rom)
+- and / or [https://archive.org/details/jv880_rompack_v1](https://archive.org/details/jv880_rompack_v1)
 
 ![GUI Screenshot](./Assets/readme/gui-browse.gif)
 

@@ -150,6 +150,19 @@ public:
     void setRomsFolderOverride(const juce::File &dir);
     bool retryLoadRoms();
 
+    //==============================================================================
+    // Top-of-window display mode (Alan's request, 2026-09-08 - "fais pareil que pour le D110"):
+    // LcdOnly is the classic small dot-matrix strip alone (unchanged default behaviour);
+    // PanelCompact/PanelFull replace it with a PanelSkin (see PanelSkin.h) showing the whole photo
+    // -based front panel, with that same live LCD embedded into the photo's own LCD opening -
+    // VirtualJVEditor::resized() reads this to decide what to lay out up top. Persisted like the
+    // ROM folder override just above (a small file under the JV880 app-data folder, not
+    // DataToSave), loaded once at construction; setDisplayMode() also pushes the change to the
+    // active editor, same convention as setPerformanceModeEnabled().
+    enum class DisplayMode { LcdOnly = 0, PanelCompact = 1, PanelFull = 2 };
+    DisplayMode displayMode = DisplayMode::LcdOnly;
+    void setDisplayMode(DisplayMode mode);
+
     struct PatchInfo
     {
         const char* name;

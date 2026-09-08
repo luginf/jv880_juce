@@ -3,14 +3,18 @@
 <JUCERPROJECT id="DSwmeO" name="virtual_jv" projectType="audioplug" useAppConfig="0"
               version="1.0.1" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
               pluginManufacturerCode="GlZs" pluginCode="VRJV" cppLanguageStandard="17"
-              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="VirtualJV"
-              pluginDesc="VirtualJV" companyName="Giulio Zausa" lv2Uri="https://www.GiulioZausa.com/plugins/virtual_jv">
+              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="Virtual JV-880"
+              pluginDesc="Virtual JV-880" companyName="Giulio Zausa" lv2Uri="https://www.GiulioZausa.com/plugins/virtual_jv">
   <MAINGROUP id="U4zWTk" name="virtual_jv">
     <GROUP id="{BA05F489-649E-6AE4-7F62-10742B1AC120}" name="Assets">
       <FILE id="DiWlj3" name="VirtualJV Logo.svg" compile="0" resource="1"
             file="Assets/VirtualJV Logo.svg"/>
       <FILE id="Jv880PnC" name="jv880_panel_compact.png" compile="0" resource="1"
             file="Source/Resources/jv880_panel_compact.png"/>
+      <FILE id="Jv880PnF" name="jv880.png" compile="0" resource="1"
+            file="Source/Resources/jv880.png"/>
+      <FILE id="Jv880PnX" name="jv880_commands.png" compile="0" resource="1"
+            file="Source/Resources/jv880_commands.png"/>
     </GROUP>
     <GROUP id="{A9A4FE8C-A726-5731-A9C6-45A227C17A55}" name="Source">
       <FILE id="V15HPu" name="rom.cpp" compile="1" resource="0" file="Source/rom.cpp"/>
@@ -48,6 +52,8 @@
         <FILE id="Pf7Tab" name="PerformanceTab.h" compile="0" resource="0" file="Source/ui/PerformanceTab.h"/>
         <FILE id="It8Fac" name="InterfaceTab.cpp" compile="1" resource="0" file="Source/ui/InterfaceTab.cpp"/>
         <FILE id="It9Fac" name="InterfaceTab.h" compile="0" resource="0" file="Source/ui/InterfaceTab.h"/>
+        <FILE id="Pnskn1" name="PanelSkin.cpp" compile="1" resource="0" file="Source/ui/PanelSkin.cpp"/>
+        <FILE id="Pnskn2" name="PanelSkin.h" compile="0" resource="0" file="Source/ui/PanelSkin.h"/>
         <FILE id="Xb1Kc5" name="SettingsTab.cpp" compile="1" resource="0" file="Source/ui/SettingsTab.cpp"/>
         <FILE id="IRgLIQ" name="SettingsTab.h" compile="0" resource="0" file="Source/ui/SettingsTab.h"/>
       </GROUP>

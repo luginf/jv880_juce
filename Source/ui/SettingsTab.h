@@ -92,5 +92,10 @@ private:
 
     void refreshRomSection();
 
+    // Top-of-window display mode (Alan's request, 2026-09-08) - see VirtualJVProcessor::
+    // DisplayMode/setDisplayMode() and PanelSkin.h for what each choice actually shows.
+    juce::Label displaySectionHeaderLabel;
+    juce::ComboBox displayModeCombo;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SettingsTab)
 };

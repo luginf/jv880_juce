@@ -16,6 +16,7 @@
 #include "ui/widgets/LCDisplay.h"
 #include "ui/widgets/TabBar.h"
 #include "ui/widgets/VirtualKeyboard.h"
+#include "ui/PanelSkin.h"
 #include "ui/PatchBrowser.h"
 #include "ui/PerformanceTab.h"
 #include "ui/InterfaceTab.h"
@@ -48,6 +49,11 @@ public:
     // ROMs been found the first time.
     void romsBecameAvailable();
 
+    // Called by VirtualJVProcessor::setDisplayMode() (Alan's request, 2026-09-08) whenever the
+    // Settings-tab display-mode choice changes - swaps which of lcd/panelDisplay is visible and
+    // re-lays-out the top strip. See resized()'s own comment for the actual mode logic.
+    void refreshDisplayMode();
+
     void setSelectedTab(const int index) { tabs.setCurrentTabIndex(index); }
     void setSelectedROM(const int index) { patchBrowser.categoriesListBox.selectRow(index); }
     void setLCDColor(const LCDisplay::Color color) { lcd.setLCDColor(color); }
@@ -64,7 +70,13 @@ private:
 
     VirtualJVProcessor& processor;
 
+    // Top-of-window display (Alan's request, 2026-09-08): exactly one of these two is visible at
+    // a time, chosen by processor.displayMode (Settings tab) - `lcd` for the classic fixed
+    // 820x100 dot-matrix-only strip (LcdOnly, default/unchanged), `panelDisplay` for the photo-
+    // based skin (PanelCompact/PanelFull - see PanelSkin.h), which spans the window's own current
+    // width and embeds that same live LCD into the photo. See resized()/refreshDisplayMode().
     LCDisplay lcd;
+    PanelSkin panelDisplay;
     TabBar tabs;
     PatchBrowser patchBrowser;
     PerformanceTab performanceTab;
