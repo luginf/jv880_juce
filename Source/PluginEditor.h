@@ -42,6 +42,12 @@ public:
     void updatePerformanceTab();
     void showToneOrRhythmEditTabs(const bool isRhythm);
 
+    // Called by VirtualJVProcessor::retryLoadRoms() (Alan's request, 2026-09-08) once ROMs that
+    // previously failed to load succeed - swaps the reduced "ROM setup" tab set (see
+    // showRomSetupOnly()) for the real one, same content the constructor would have shown had
+    // ROMs been found the first time.
+    void romsBecameAvailable();
+
     void setSelectedTab(const int index) { tabs.setCurrentTabIndex(index); }
     void setSelectedROM(const int index) { patchBrowser.categoriesListBox.selectRow(index); }
     void setLCDColor(const LCDisplay::Color color) { lcd.setLCDColor(color); }
@@ -84,6 +90,13 @@ private:
     // up navigating the bank list instead of the patch that was just loaded (Alan's report).
     // -1 (neither 0 nor 1) so the very first call, from the constructor, always goes through.
     int tabsConfiguredForRhythm = -1;
+
+    // Reduced tab set shown while processor.loaded is false (Alan's report, 2026-09-08: on a
+    // fresh machine, ROMs not found used to mean an OS alert dialog and an otherwise-empty
+    // window, with no way to fix it short of guessing the app-data folder and restarting). Only
+    // Settings is added (it's the one tab that's safe/useful with no ROM data at all - see its
+    // own ROM Folder section) - see showRomSetupOnly().
+    void showRomSetupOnly();
 
     bool nativeTitleBarRequested = false;
 

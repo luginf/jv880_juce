@@ -69,29 +69,14 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
 
     setSize(820, 900 + (int)VirtualKeyboard::kRefH);
 
+    // ROMs not found (Alan's report, 2026-09-08: this used to be a blocking OS alert dialog and
+    // an otherwise-empty window - no visible path forward besides guessing the app-data folder
+    // and restarting). The main interface now shows regardless, with a reduced tab set (just
+    // Settings, which has its own ROM Folder section to point at the right place and retry
+    // without restarting) - see showRomSetupOnly()/romsBecameAvailable().
     if (!processor.loaded)
     {
-        auto msgBox = juce::MessageBoxOptions()
-                      .withIconType(juce::MessageBoxIconType::WarningIcon)
-                      .withTitle("Error")
-                      .withMessage("Cannot load ROMs. Please copy the ROM files to the ROM folder and restart the plugin to continue.")
-                      .withButton("Open ROM Folder")
-                      .withAssociatedComponent(this)
-                      .withParentComponent(this);
-
-        juce::AlertWindow::showAsync
-        (
-            msgBox,   
-            [](int /* param */)
-                {
-                    juce::File romsDir(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("JV880"));
-
-                    if (romsDir.exists())
-                    {
-                        juce::Process::openDocument(romsDir.getFullPathName(), "");
-                    }
-                }
-        );
+        showRomSetupOnly();
     }
     else
     {
@@ -99,6 +84,25 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         setSelectedTab(processor.status.selectedTab);
         updateEditTabs();
     }
+}
+
+void VirtualJVEditor::showRomSetupOnly()
+{
+    const auto bgColor = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
+    tabs.clearTabs();
+    tabs.addTab("Settings", bgColor, &settingsViewport, false);
+    settingsTab.updateValues();
+    // Not 0/1 (see this field's own comment) - forces romsBecameAvailable()'s call into
+    // showToneOrRhythmEditTabs() to do a real rebuild instead of being short-circuited as a
+    // no-op "already configured for this mode".
+    tabsConfiguredForRhythm = -1;
+}
+
+void VirtualJVEditor::romsBecameAvailable()
+{
+    showToneOrRhythmEditTabs(processor.status.isDrums);
+    setSelectedTab(processor.status.selectedTab);
+    updateEditTabs();
 }
 
 VirtualJVEditor::~VirtualJVEditor()

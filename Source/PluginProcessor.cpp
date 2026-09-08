@@ -49,6 +49,34 @@ void savePersistedKeyboardSettings(bool pcInput, int pcLayout) {
   file.getParentDirectory().createDirectory();
   xml.writeTo(file);
 }
+
+// Where the ROM folder override (see rom.h's setRomsDirectoryOverride()) is persisted -
+// deliberately always at this fixed default app-data location regardless of what the override
+// itself points to (same reasoning as keyboardSettingsFile()), so it's always findable even if
+// the folder it names has since moved, been deleted, or was never valid to begin with.
+juce::File romFolderSettingsFile() {
+  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      .getChildFile("JV880")
+      .getChildFile("rom_folder.txt");
+}
+
+juce::File loadPersistedRomFolderOverride() {
+  auto file = romFolderSettingsFile();
+  if (!file.existsAsFile())
+    return {};
+  auto path = file.loadFileAsString().trim();
+  return path.isEmpty() ? juce::File{} : juce::File(path);
+}
+
+void savePersistedRomFolderOverride(const juce::File &dir) {
+  auto file = romFolderSettingsFile();
+  if (dir == juce::File{}) {
+    file.deleteFile();
+    return;
+  }
+  file.getParentDirectory().createDirectory();
+  file.replaceWithText(dir.getFullPathName());
+}
 } // namespace
 
 //==============================================================================
@@ -64,8 +92,22 @@ VirtualJVProcessor::VirtualJVProcessor()
 
   mcu = new MCU();
 
+  {
+    auto overrideDir = loadPersistedRomFolderOverride();
+    if (overrideDir != juce::File{})
+      setRomsDirectoryOverride(overrideDir.getFullPathName().toStdString());
+  }
+
+  attemptLoadRoms();
+}
+
+// See this method's own comment in PluginProcessor.h.
+bool VirtualJVProcessor::attemptLoadRoms() {
+  if (loaded)
+    return true;
+
   if (!preloadAll(loadedRoms))
-    return;
+    return false;
 
   mcu->startSC55(loadedRoms[getRomIndex("jv880_rom1.bin")],
                  loadedRoms[getRomIndex("jv880_rom2.bin")],
@@ -624,6 +666,188 @@ VirtualJVProcessor::VirtualJVProcessor()
     std::fprintf(stderr, "[selftest-perf2] done, exiting\n");
     std::exit(0);
   }
+
+  // Headless investigation for unlocking expansion/User patches in Performance Parts (Alan's
+  // request, 2026-09-08 - see CLAUDE.md's "Mode Performance v2" section). A Performance Part can
+  // only reference the firmware's own Patch Memory by bank/number, never inline bytes - the 195
+  // ROM-native patches already live there verbatim (see performancePatchMapping()), but
+  // expansion/User patches only exist as raw bytes this project injects directly, so they'd need
+  // to actually be WRITTEN into the real writable "Internal" Patch Memory bank first.
+  // RolandJV880.java's own prepareBuffer() (the single-Patch editor, not Multi) gives the write
+  // address for that bank: AA=1 (Internal), BB=number+0x40, CC=0x20, DD=0 for the Patch Common
+  // record, CC+=(t+7) for each of the 4 Tones (t=1..4) - this locates where that lands in `nvram`
+  // by writing just a 12-byte name marker (plain ASCII on the wire, no nibble encoding unlike
+  // most other Patch fields) and searching for it, rather than assuming the wire layout matches
+  // this project's own internal Patch struct (dataStructures.h) byte-for-byte.
+  if (std::getenv("JV880_SELFTEST_PATCHMEM")) {
+    const int sampleRate = 44100;
+    const unsigned int blockFrames = 512;
+    std::vector<float> l(blockFrames), r(blockFrames);
+
+    auto runMs = [&](int ms) {
+      int totalFrames = sampleRate * ms / 1000;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        done += (int)blockFrames;
+      }
+    };
+
+    auto sendDT1 = [&](uint8_t AA, uint8_t BB, uint8_t CC, uint8_t DD, const std::vector<uint8_t> &payload) {
+      std::vector<uint8_t> msg = {0xF0, 0x41, 0x10, 0x46, 0x12, AA, BB, CC, DD};
+      uint32_t sum = AA + BB + CC + DD;
+      for (auto b : payload) { msg.push_back(b); sum += b; }
+      uint8_t checksum = (uint8_t)((0x80 - (sum & 0x7F)) & 0x7F);
+      msg.push_back(checksum);
+      msg.push_back(0xF7);
+      mcu->postMidiSC55(msg.data(), (int)msg.size());
+    };
+
+    std::fprintf(stderr, "[selftest-patchmem] booting 2000 ms...\n");
+    runMs(2000);
+
+    // Slot 0 gets "PATCHMEMTEST", slot 1 gets "SECONDSLOT01" - two different markers so a
+    // found stride between them confirms per-slot spacing, not just the base.
+    std::fprintf(stderr, "[selftest-patchmem] writing name markers to Internal Patch Memory slots 0 and 1\n");
+    std::vector<uint8_t> name0(12, ' ');
+    { const char *n = "PATCHMEMTEST"; for (int i = 0; i < 12; i++) name0[(size_t)i] = (uint8_t)n[i]; }
+    sendDT1(1, 0x40, 0x20, 0x00, name0); // AA=1 Internal, BB=0+0x40, CC=0x20 Patch Memory Common
+    runMs(300);
+
+    std::vector<uint8_t> name1(12, ' ');
+    { const char *n = "SECONDSLOT01"; for (int i = 0; i < 12; i++) name1[(size_t)i] = (uint8_t)n[i]; }
+    sendDT1(1, 0x41, 0x20, 0x00, name1); // slot 1
+    runMs(2000);
+
+    // Control: RolandJV880.java's prepareBuffer() targets AA=0,BB=8,CC=0x20,DD=0 for
+    // "toWorkingMemory" (i.e. Patch Temp itself) - a DIFFERENT address than AA=1,BB=0x40 (Internal
+    // Patch Memory slot 0) above. If this also lands at 0x0d70, slot 0 of Internal Patch Memory
+    // and Patch Temp are genuinely the same NVRAM cells on this firmware; if it lands somewhere
+    // else, the slot0 result above was something else entirely (e.g. the write silently fell
+    // through to Temp regardless of AA/BB).
+    std::vector<uint8_t> name2(12, ' ');
+    { const char *n = "WORKINGMEM01"; for (int i = 0; i < 12; i++) name2[(size_t)i] = (uint8_t)n[i]; }
+    sendDT1(0, 0x08, 0x20, 0x00, name2);
+    runMs(2000);
+
+    auto searchFor12 = [&](const char *label, const char *needle) {
+      for (size_t i = 0; i + 12 <= sizeof(mcu->nvram); i++) {
+        if (std::memcmp(&mcu->nvram[i], needle, 12) == 0)
+          std::fprintf(stderr, "[selftest-patchmem] FOUND %s in nvram at offset 0x%04zx\n", label, i);
+      }
+      for (size_t i = 0; i + 12 <= sizeof(mcu->sram); i++) {
+        if (std::memcmp(&mcu->sram[i], needle, 12) == 0)
+          std::fprintf(stderr, "[selftest-patchmem] FOUND %s in sram at offset 0x%04zx\n", label, i);
+      }
+    };
+    searchFor12("slot0 marker (PATCHMEMTEST)", "PATCHMEMTEST");
+    searchFor12("slot1 marker (SECONDSLOT01)", "SECONDSLOT01");
+    searchFor12("working-memory marker (WORKINGMEM01)", "WORKINGMEM01");
+
+    // End-to-end check of the real shipped API: assign the first expansion-ROM patch found
+    // (patchInfoPerGroup[1], if any expansion is installed), else fall back to a freshly-saved
+    // User patch (saveCurrentPatchAs() on whatever's currently loaded - this sandbox has no
+    // expansion ROM installed), to Performance Part 3, enable Performance mode, and confirm it
+    // actually plays.
+    int expansionPatchIndex = -1;
+    if (patchInfoPerGroup.size() > 1 && !patchInfoPerGroup[1].empty()) {
+      expansionPatchIndex = patchInfoPerGroup[1][0]->iInList;
+    } else {
+      std::fprintf(stderr, "[selftest-patchmem] no expansion ROM installed, falling back to a User patch\n");
+      setCurrentProgram(0); // status.patch is all-zero (silent) until a real patch is loaded once
+      auto file = userPatchesDir().getChildFile("SelfTestUser.jvp");
+      if (saveCurrentPatchAs(file) && !patchInfoPerGroup[userGroupIndex].empty())
+        expansionPatchIndex = patchInfoPerGroup[userGroupIndex].back()->iInList;
+    }
+
+    if (expansionPatchIndex >= 0) {
+      std::fprintf(stderr, "[selftest-patchmem] assigning patch \"%.*s\" (index %d) to Part 3\n",
+                   patchInfos[expansionPatchIndex].nameLength, patchInfos[expansionPatchIndex].name,
+                   expansionPatchIndex);
+      sendPatchToPerformancePart(expansionPatchIndex, 2);
+      setPerformancePartParams(2, 3, 127, 64, true);
+      setPerformanceModeEnabled(true);
+      runMs(3000);
+
+      uint8_t noteOn[3] = {0x92, 60, 100};
+      mcu->postMidiSC55(noteOn, 3);
+      float peakL = 0, peakR = 0;
+      int totalFrames = sampleRate;
+      int done = 0;
+      while (done < totalFrames) {
+        mcu->updateSC55WithSampleRate(l.data(), r.data(), blockFrames, sampleRate);
+        for (unsigned int i = 0; i < blockFrames; i++) {
+          peakL = std::max(peakL, std::abs(l[i]));
+          peakR = std::max(peakR, std::abs(r[i]));
+        }
+        done += (int)blockFrames;
+      }
+      std::fprintf(stderr, "[selftest-patchmem] audio check (expansion patch on Part 3, ch3): peakL=%.4f peakR=%.4f\n", peakL, peakR);
+
+      if (auto *bitmapResult = (uint8_t *)mcu->lcd.LCD_Update()) {
+        for (size_t i = 0; i < 1024 * 1024; i++) bitmapResult[i * 4 + 3] = 0xff;
+        juce::Image image(juce::Image::PixelFormat::ARGB, 820, 100, false);
+        juce::Image::BitmapData pixelMap(image, juce::Image::BitmapData::readWrite);
+        for (int y = 0; y < pixelMap.height; y++)
+          std::memcpy(pixelMap.getLinePointer(y), bitmapResult + (y * 1024 * 4), (size_t)pixelMap.lineStride);
+        juce::PNGImageFormat png;
+        juce::File outFile("/tmp/jv880_lcd_expansion.png");
+        juce::FileOutputStream stream(outFile);
+        if (stream.openedOk()) {
+          stream.setPosition(0);
+          stream.truncate();
+          png.writeImageToStream(image, stream);
+          std::fprintf(stderr, "[selftest-patchmem] wrote LCD screenshot to /tmp/jv880_lcd_expansion.png\n");
+        }
+      }
+    } else {
+      std::fprintf(stderr, "[selftest-patchmem] no patch available for the end-to-end check, skipping\n");
+    }
+
+    std::fprintf(stderr, "[selftest-patchmem] done, exiting\n");
+    std::exit(0);
+  }
+
+  return true;
+}
+
+juce::File VirtualJVProcessor::getRomsFolder() {
+  return juce::File(getEffectiveRomsDirectory());
+}
+
+void VirtualJVProcessor::setRomsFolderOverride(const juce::File &dir) {
+  setRomsDirectoryOverride(dir == juce::File{} ? std::string() : dir.getFullPathName().toStdString());
+  savePersistedRomFolderOverride(dir);
+
+  // Only meaningful to actually re-point the live engine at while it's still unloaded - see
+  // attemptLoadRoms()'s own comment for why switching ROM sets under an already-running engine
+  // isn't supported. Once loaded, this has already done its job (persisted + updated rom.cpp's
+  // override for next launch); nothing here to unwind.
+  if (loaded)
+    return;
+
+  for (auto &ptr : loadedRoms) {
+    if (ptr != nullptr) {
+      free(ptr);
+      ptr = nullptr;
+    }
+  }
+  for (auto &info : romInfos)
+    info.loaded = false;
+}
+
+bool VirtualJVProcessor::retryLoadRoms() {
+  if (loaded)
+    return true;
+
+  if (!attemptLoadRoms())
+    return false;
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->romsBecameAvailable();
+
+  return true;
 }
 
 VirtualJVProcessor::~VirtualJVProcessor() {
@@ -933,8 +1157,9 @@ bool performancePatchMapping(int patchInfoIndex, uint8_t &bank, uint8_t &number,
 }
 
 constexpr size_t kPerfPartNameBytes = sizeof(VirtualJVProcessor::PerformancePart{}.name);
-// present(1) + isRhythm(1) + bank(1) + number(1) + name + midiChannel(1) + level(1) + pan(1) + enabled(1)
-constexpr size_t kPerfPartRecordBytes = 4 + kPerfPartNameBytes + 4;
+// present(1) + isRhythm(1) + bank(1) + number(1) + name + midiChannel(1) + level(1) + pan(1) +
+// enabled(1) + expansionI(1)
+constexpr size_t kPerfPartRecordBytes = 4 + kPerfPartNameBytes + 5;
 constexpr size_t kPerfNameBytes = 12; // matches the firmware's own Common name field width
 
 // Shared by the "Save As..." bank format and the session-restore file - both serialize the same
@@ -965,6 +1190,7 @@ void appendPerformanceParts(
     block.append(&pan, 1);
     uint8_t en = part.enabled ? 1 : 0;
     block.append(&en, 1);
+    block.append(&part.expansionI, 1);
   }
 }
 
@@ -992,6 +1218,7 @@ bool readPerformanceParts(
     uint8_t lvl = bytes[offset]; offset += 1;
     uint8_t pan = bytes[offset]; offset += 1;
     uint8_t en = bytes[offset]; offset += 1;
+    uint8_t expansionI = bytes[offset]; offset += 1;
 
     part.present = present != 0;
     part.isRhythm = isRhythm != 0;
@@ -1003,15 +1230,44 @@ bool readPerformanceParts(
     part.level = lvl;
     part.pan = pan;
     part.enabled = en != 0;
+    part.expansionI = expansionI;
   }
   return true;
 }
 } // namespace
 
 bool VirtualJVProcessor::isEligibleForPerformancePart(int patchInfoIndex) const {
+  if (patchInfoIndex < 0 || patchInfoIndex >= romPatchCapacity + userPatchCapacity
+      || !patchInfos[patchInfoIndex].present)
+    return false;
+
   uint8_t bank, number;
   bool isRhythm;
-  return performancePatchMapping(patchInfoIndex, bank, number, isRhythm);
+  if (performancePatchMapping(patchInfoIndex, bank, number, isRhythm))
+    return true; // ROM-native - already lives in real Patch Memory verbatim
+
+  // Expansion-ROM/User: eligible for tone Parts only (injectCustomPatchIntoInternalMemory()) -
+  // rhythm sets from those banks aren't supported yet, see CLAUDE.md.
+  return !patchInfos[patchInfoIndex].drums;
+}
+
+// See this function's own comment in PluginProcessor.h. Caller must already hold mcuLock.
+void VirtualJVProcessor::injectCustomPatchIntoInternalMemory(int patchInfoIndex, int internalSlot) {
+  auto &info = patchInfos[patchInfoIndex];
+  if (info.drums)
+    return;
+
+  memcpy(&mcu->nvram[0x0d70 + internalSlot * 0x16a], info.name, 0x16a);
+
+  // Only one waverom_exp can be loaded into this single engine at a time - matches setCurrent
+  // Program()'s own handling for Patch mode, and the real hardware's own single wave-expansion-
+  // slot limit. A Performance mixing Parts from two *different* expansion boards will have
+  // whichever was injected last sound right and the other(s) not - same real-hardware
+  // constraint, not something this project's single-engine design adds on top.
+  if (info.expansionI != 0xff && info.expansionI < NUM_EXPS
+      && expansionsDescr[info.expansionI] != nullptr) {
+    memcpy(mcu->pcm.waverom_exp, expansionsDescr[info.expansionI], 0x800000);
+  }
 }
 
 // Pushes the Performance Common record (name + effects + voice reserve) to the single `mcu`
@@ -1062,39 +1318,80 @@ void VirtualJVProcessor::sendPatchToPerformancePart(int patchInfoIndex, int part
       || !patchInfos[patchInfoIndex].present)
     return;
 
-  uint8_t bank, number;
-  bool isRhythm;
-  if (!performancePatchMapping(patchInfoIndex, bank, number, isRhythm))
-    return; // Card/expansion-ROM or User-saved patch - not addressable as a Patch Memory slot yet
+  auto &info = patchInfos[patchInfoIndex];
 
   // Part 8 is fixed to Rhythm on real hardware, Parts 1-7 fixed to tone - reject a mismatch
   // rather than silently mis-configuring the Part.
   const bool wantsRhythmPart = (partIndex == kNumPerformanceParts - 1);
-  if (isRhythm != wantsRhythmPart)
+  if (info.drums != wantsRhythmPart)
     return;
 
-  auto &info = patchInfos[patchInfoIndex];
+  uint8_t bank, number;
+  bool isRhythm;
+  const bool isRomNative = performancePatchMapping(patchInfoIndex, bank, number, isRhythm);
+
+  mcuLock.enter();
+
+  if (!isRomNative) {
+    if (info.drums) {
+      // Rhythm set from an expansion/User bank - not addressable yet, see CLAUDE.md.
+      mcuLock.exit();
+      return;
+    }
+    // Expansion-ROM/User tone patch: inject it into this Part's own reserved Internal Patch
+    // Memory slot (1..7 - slot 0 is Patch mode's own live buffer, never touched here).
+    bank = 0;
+    number = (uint8_t)(partIndex + 1);
+    injectCustomPatchIntoInternalMemory(patchInfoIndex, partIndex + 1);
+  }
+
   auto &part = performanceParts[partIndex];
 
   part.present = true;
-  part.isRhythm = isRhythm;
+  part.isRhythm = info.drums;
   part.bank = bank;
   part.number = number;
+  part.expansionI = (uint8_t)info.expansionI;
 
   const int n = std::min(info.nameLength, (int)sizeof(part.name) - 1);
   memcpy(part.name, info.name, (size_t)n);
   part.name[n] = '\0';
 
-  mcuLock.enter();
   if (performanceModeEnabled)
     pushPerformancePartToEngine(partIndex);
   mcuLock.exit();
+
+  // Non-blocking heads-up (Alan's request, 2026-09-08), not a rejection - see PerformancePart::
+  // expansionI's own comment in PluginProcessor.h for why mixing boards is a real single-engine/
+  // real-hardware limitation rather than something worth preventing outright.
+  bool mixedExpansionWarning = false;
+  if (part.expansionI != 0xff) {
+    for (int i = 0; i < kNumPerformanceParts; ++i) {
+      if (i == partIndex)
+        continue;
+      auto &other = performanceParts[i];
+      if (other.present && other.expansionI != 0xff && other.expansionI != part.expansionI) {
+        mixedExpansionWarning = true;
+        break;
+      }
+    }
+  }
 
   savePerformanceSessionState();
 
   if (auto editor = getActiveEditor())
     if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+    {
       e->updatePerformanceTab();
+      if (mixedExpansionWarning)
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon, "Mixed expansion boards",
+            "This Performance now combines Parts from more than one expansion ROM. Only one "
+            "expansion board can be loaded into the engine at a time, so only the most recently "
+            "assigned board's Part(s) will sound correct - the others will play whatever "
+            "expansion is currently loaded instead.",
+            "OK", e);
+    }
 }
 
 void VirtualJVProcessor::clearPerformancePart(int partIndex) {

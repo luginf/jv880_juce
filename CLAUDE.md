@@ -273,19 +273,55 @@ confirmé, dans l'ordre :
    boot ("I01:JV Strings"). Résultat : **192 patches + 3 rythmes** (tout le contenu ROM-natif que
    ce projet expose déjà) sont assignables à une Part sans aucun travail supplémentaire.
 
-### Ce qui n'est PAS encore assignable à une Part
+### Extensions et patches User débloqués (2026-09-08)
 
-Les patches issus des ROMs d'expansion (Card/SR-JV) et les patches "User" sauvegardés via Save
-As... (`patchInfos[]` index ≥ 195) ne sont **pas** assignables à une Part de Performance : le
-firmware ne référence jamais les données d'un patch en clair depuis une Part, seulement un
-numéro dans sa propre mémoire de patches (Patch Memory) - il faudrait donc *aussi* écrire ces
-patches dans la vraie banque Internal réinscriptible du firmware (adresse trouvée dans
-`RolandJV880.java` : `AA=1,BB=numéro+0x40,CC=0x20` pour l'écriture, format encore différent -
-34+4×116 octets avec un layout nibblé propre au format "Patch" complet, pas encore traduit depuis
-la structure `dataStructures.h` de ce projet). `PatchBrowser`
-(`VirtualJVProcessor::isEligibleForPerformancePart()`) filtre silencieusement ces patches - le
-clic droit "Send to Performance Part" n'apparaît simplement pas pour eux. Piste de suite
-naturelle si Alan le demande.
+**Fait.** Les patches issus des ROMs d'expansion (SR-JV) et les patches "User" sauvegardés via
+Save As... sont maintenant assignables aux Parts 1-7 (pas la Part 8/Rhythm - voir plus bas).
+
+La piste initiale ("écrire au format SysEx complet du Patch, `AA=1,BB=numéro+0x40,CC=0x20`,
+34+4×116 octets nibblés") s'est avérée inutile. En sondant cette adresse avec juste un marqueur
+nom (12 octets ASCII, pas de nibble - voir "Outils" ci-dessous), le slot 0 de cette banque
+"Internal Patch Memory" atterrit... exactement à `nvram[0x0d70]` = **l'adresse que ce projet
+utilise déjà comme "Patch Temp"** (`setCurrentProgram()`), et le slot 1 exactement `0x16a` (362
+octets, la taille d'un `Patch` déjà connue) plus loin. Conclusion : la vraie banque Internal
+réinscriptible est un tableau de **64 slots contigus de 0x16a octets à `nvram[0x0d70..0x67f0)`**
+- qui se termine exactement là où commence Rhythm Temp (`0x67f0`, déjà connu) - carte mémoire
+propre, sans trou. Le "Patch Temp" que ce projet poke déjà directement est donc littéralement le
+**slot 0** de cette banque, pas une zone de scratch séparée comme supposé au départ.
+
+Conséquence : écrire un patch personnalisé dans cette banque, c'est le **même `memcpy` direct**
+que `setCurrentProgram()` fait déjà pour le slot 0 - aucun SysEx, aucun format nibblé à
+retro-ingénierer. `VirtualJVProcessor::injectCustomPatchIntoInternalMemory()`
+(`Source/PluginProcessor.cpp`/`.h`) copie les octets bruts du patch (`patchInfos[i].name`, déjà
+au format `Patch` de 0x16a octets, expansion ou User) dans `nvram[0x0d70 + slot*0x16a]`, slot =
+`partIndex+1` (1 à 7 - **le slot 0 n'est jamais touché**, c'est le patch actuellement actif en
+mode Patch simple). La Part pointe ensuite dessus via son champ `patchnumber` normal
+(`bank=0, number=slot`), exactement comme pour un patch ROM-natif.
+
+Charge aussi la bonne `waverom_exp` de l'expansion si besoin (même logique que
+`setCurrentProgram()`) - avec la même limite que le vrai hardware : **un seul moteur = une seule
+extension active à la fois**. Mélanger dans une même Performance des Parts venant de deux
+extensions différentes ne sonnera pas juste (celle chargée en dernier gagne) - ce n'est pas une
+limite de cette émulation, c'est celle du vrai JV-880 qui n'a physiquement qu'un seul slot
+d'extension.
+
+Validé de bout en bout (voir "Outils" ci-dessous) : un patch User fraîchement sauvegardé, assigné
+à la Part 3, joue réellement (peak audio non nul) une fois le mode Performance activé. Pas encore
+testé avec une vraie extension SR-JV (aucune ne charge dans ce sandbox - fichier présent mais
+rejeté, probablement un souci de somme de contrôle/dump sans rapport avec cette fonctionnalité,
+pas creusé) mais le chemin de code est strictement identique (même fonction, même copie brute) -
+confiance élevée.
+
+`VirtualJVProcessor::isEligibleForPerformancePart()` accepte maintenant tout patch ton (pas
+rythme) présent, ROM-natif ou non ; `PatchBrowser` propose donc "Send to Performance Part N"
+pour n'importe quel patch de Browse (y compris "User" et les extensions), sauf les rythmes non
+ROM-natifs.
+
+**Ce qui reste non supporté** : les **rythmes** d'extension/User pour la Part 8. Le vrai firmware
+stocke les rythmes très différemment (`RolandJV880Drum.java` : 61 messages SysEx, un par note,
+adresse `AA=1,BB=0x7F,CC=0x40+note`) - pas la même structure simple à un seul bloc que les patches
+tons, donc pas la même astuce "trouver l'offset nvram et memcpy" sans plus de travail. Piste de
+suite si Alan le demande.
 
 ### Architecture du code
 
@@ -334,12 +370,76 @@ En plus de `JV880_TRACE_NVRAM`/`JV880_SELFTEST_BUTTON` (déjà documentés plus 
   non-régression pour cette fonctionnalité. Bascule Performance→Patch et vice-versa, vérifie le
   rendu audio à deux notes simultanées sur deux canaux différents, dump
   `/tmp/jv880_lcd_perf2.png` et `/tmp/jv880_lcd_backtopatch.png`.
+- `JV880_SELFTEST_PATCHMEM=1` : a servi à localiser la banque "Internal Patch Memory" (voir
+  ci-dessus) puis à valider `injectCustomPatchIntoInternalMemory()` de bout en bout - assigne un
+  patch d'extension (si une charge dans l'environnement) ou, sinon, un patch User fraîchement
+  sauvegardé à la Part 3, active le mode Performance, vérifie le rendu audio. Dump
+  `/tmp/jv880_lcd_expansion.png`.
 
-Les deux tournent entièrement headless (aucun device audio ni `$DISPLAY` requis - le hook
+Toutes tournent entièrement headless (aucun device audio ni `$DISPLAY` requis - le hook
 s'exécute et `exit(0)` avant toute création de fenêtre), ex. :
 ```
 JV880_SELFTEST_PERF2=1 ./Builds/LinuxMakefile/build/jv880
 ```
+
+### Interface tab v2 : skin photo (2026-09-08)
+
+> **Superseded** la disposition en grille de `juce::TextButton` décrite juste en dessous
+> ("Disposition (2026-09-07...)") - remplacée par un skin basé sur une image, même technique que
+> `D110Panel` dans `~/src/D110/d110-vst-emulator` ("the front panel IS the reference
+> photograph... every control is an invisible hit-region"). Gardé ci-dessous pour l'historique.
+
+Alan a fourni une image (générée, pas une vraie photo - `/tmp/jv/jv880.png` et sa variante
+"compacte" `/tmp/jv/jv880_compact.png`, 2012x304) et a demandé de reprendre la technique du D110.
+Seule la version **compacte** est utilisée (`Source/Resources/jv880_panel_compact.png`, embarquée
+via `BinaryData::jv880_panel_compact_png` - ajoutée au groupe Assets du `.jucer` avec
+`resource="1"`, régénérée par `build/bin/JUCE/Projucer --resave VirtualJV.jucer`, qui recrée aussi
+`JuceLibraryCode/BinaryData.{h,cpp}` et les Makefiles - ces dossiers sont gitignorés, aucun risque
+de gonfler le repo). La version pleine taille (`jv880.png`, 3280px) n'a pas été intégrée : même
+mise à l'échelle, elle ne rentre pas utilement dans la largeur fixe de 820px de cet onglet - à
+reprendre seulement si Alan demande un mode plein/compact comme sur D110.
+
+**Comment les coordonnées ont été mesurées** : pas à l'oeil - analyse en composantes connexes
+(`scipy.ndimage.label`) sur un masque de seuillage couleur (les boutons sont des rectangles gris
+clair ~50 de luminance sur fond ~29, le dial DATA et le bouton VOLUME sont des cercles pleins avec
+`fill ≈ π/4` caractéristique d'un disque inscrit dans son rectangle englobant, le LCD est vert/
+teal détecté par `g > r + 20`). Un seul passage a trouvé les 12 boutons discrets (rangée du haut :
+Patch/Perform, Edit, System, Rhythm, Utility ; rangée du bas : Cursor ◄/►, Tone Select, Mute,
+Monitor, Info/Compare, Enter) plus les deux cercles (DATA, VOLUME) sans ambiguïté.
+
+**Différence avec D110Panel** : pas de découpe/incrustation des capuchons de boutons qui
+s'enfoncent dans un renfoncement animé - cette technique a besoin d'une vraie photo avec un vrai
+renfoncement/ombre à découper, que ce mockup synthétique n'a pas proprement. Le retour visuel
+d'appui ici est un simple overlay translucide (rectangle arrondi pour les boutons, anneau pour les
+deux molettes) peint par-dessus la photo statique, plus honnête sur le fait que ce n'est pas une
+vraie photo de produit.
+
+**DATA** : ni les boutons Data-/Data+ de la v1, ni un dessin figé - le mockup n'a aucun repère
+imprimé sur le disque (contrairement à la molette VOLUME du vrai D110, qui en a un et dont il
+fallait donc soustraire son propre angle avant rotation), donc un simple glisser vertical
+(convention "molette de plugin" : haut = incrémente, bas = décrémente) déclenche des impulsions
+`MCU_EncoderTrigger` - une par tranche de `kDialPxPerStep=6` px de glissement total depuis le
+`mouseDown`, avec le reliquat conservé pour qu'un glissement lent finisse quand même par
+s'enregistrer (même idée que le traitement du VOLUME de `D110Panel`). Le défilement à la molette
+(`mouseWheelMove`) marche aussi. Un petit trait indicateur cosmétique tourne de 14° par impulsion
+- purement visuel (rien de réel à représenter, ce projet n'expose aucune valeur "position du
+dial"), juste pour confirmer que le geste a été pris en compte.
+
+La coche **"Hold DATA while rotating"** (manuel p.49) et le mécanisme `LCD_SendButton`/
+`MCU_EncoderTrigger` sous-jacent sont inchangés de la v1 - seule la couche de rendu/hit-test a
+changé.
+
+Validé dans Xvfb isolé : capture pendant appui (`mouseDown` maintenu) sur EDIT, VOLUME/PREVIEW et
+Cursor ◄ - overlay bien positionné pile sur le bon capuchon à chaque fois ; glissement sur le dial
+DATA avec une boucle de petits `xdotool mousemove_relative` (un `xdotool mousemove` en un seul
+saut ne génère pas assez d'évènements `MotionNotify` intermédiaires pour que `mouseDrag` de JUCE
+les voie tous) - le trait indicateur tourne bien, confirmant que les impulsions `MCU_EncoderTrigger`
+partent. Pas moyen de vérifier avec un vrai rendu LCD dans ce sandbox (aucun device audio, donc
+`processBlock`/`updateSC55WithSampleRate` ne tourne jamais en usage normal par le GUI - seul le
+self-test headless fait tourner l'émulateur manuellement) mais le mécanisme d'envoi
+(`LCD_SendButton`/`MCU_EncoderTrigger`) est strictement identique à la v1, déjà validée de bout en
+bout par `JV880_SELFTEST_BUTTON`/`JV880_SELFTEST_PERF` plus haut - seule la couche UI qui décide
+quand les appeler a changé.
 
 **Disposition (2026-09-07, suite au retour d'Alan avec une photo du panneau réel)** : les
 boutons sont maintenant rangés dans l'ordre de lecture du vrai panneau (gauche→droite,
@@ -366,3 +466,87 @@ Canon EOS REBEL T3i) du panneau avant, quasi de face et bien éclairées - `Rola
 en particulier est un bon candidat de référence pour une vectorisation (voir
 `Roland%20JV-880/Images/Roland%20JV-880%20NNN.JPG` sur ce site, NNN = 002 à 008). Pas encore
 téléchargées dans le repo ni vectorisées - juste la piste de départ si ce chantier est repris.
+
+**Essai d'auto-trace (2026-09-08)** : test jetable (`convert -edge`/`potrace` sur un crop de
+`Roland JV-880 002.JPG`), envoyé à Alan pour inspection puis supprimé (pas dans le repo). Résultat
+sans appel : potrace ne récupère que les contours/lignes de la photo (fait pour du line-art, pas
+pour une photo avec dégradés et reflets d'aluminium brossé) - pas exploitable comme skin final.
+Une vraie illustration vectorielle demanderait un dessin manuel en utilisant la photo comme
+référence, pas un auto-trace. Ce chantier reste "à reprendre plus tard sur demande d'Alan", pas de
+changement de statut.
+
+## Mode Performance : garde-fou extensions mixtes + bascule On/Off groupée (2026-09-08)
+
+Deux petits ajouts à l'onglet Performance (v2, moteur unique - voir plus haut), suite au retour
+d'Alan :
+
+- **Alerte non bloquante sur mélange d'extensions** : `PerformancePart` (`PluginProcessor.h`)
+  gagne un champ `expansionI` (même convention que `PatchInfo::expansionI`, `0xff` = ROM-native/
+  aucune extension), rempli dans `sendPatchToPerformancePart()` et persisté dans le format
+  `.jvpf`/session (`kPerfPartRecordBytes` +1 octet - un ancien fichier au format précédent ne sera
+  simplement pas reconnu, même convention que d'habitude). Après chaque assignation, si la Part
+  qui vient d'être configurée référence une extension différente de celle d'une autre Part déjà
+  présente, une `juce::AlertWindow::showMessageBoxAsync` (non bloquante, juste informative)
+  prévient Alan que ce moteur unique ne peut charger qu'une seule extension à la fois - la Part
+  assignée en dernier "gagne", les autres joueront le mauvais son. N'empêche jamais l'assignation
+  elle-même (c'est un vrai fonctionnement du hardware réel, pas un bug de cette émulation - voir
+  déjà le commentaire d'`injectCustomPatchIntoInternalMemory()`).
+- **Bouton "All On/Off"** (`PerformanceTab.h`/`.cpp`) : au-dessus de la colonne "On", bascule les 8
+  Parts d'un coup - éteint tout si une majorité est déjà allumée, sinon allume tout (jamais un
+  clic qui ne change visiblement rien, contrairement à un simple "inverser l'état courant" sur des
+  Parts déjà mélangées).
+
+## Configuration des ROM : dossier configurable + interface principale toujours visible (2026-09-08)
+
+Alan a rapporté un échec de chargement des ROM sur une autre machine : la boîte de dialogue
+d'erreur ("Cannot load ROMs...Open ROM Folder") s'ouvrait bien, il a copié les fichiers dans le
+dossier ouvert, mais ça n'a pas fonctionné - sans indice pour comprendre pourquoi, ni moyen de
+réessayer sans redémarrer. Trois changements en réponse :
+
+1. **Dossier ROM configurable et visible** (`rom.h`/`.cpp`, nouvelles fonctions
+   `setRomsDirectoryOverride()`/`getRomsDirectoryOverride()`/`getEffectiveRomsDirectory()`, un
+   simple `std::string` global dans `rom.cpp` - header sans dépendance JUCE) : par défaut toujours
+   le dossier app-data par utilisateur de l'OS (`userApplicationDataDirectory/JV880`, comme avant),
+   mais réassignable à n'importe quel dossier. Persisté séparément de `DataToSave` (même raison que
+   `keyboardSettingsFile()`) dans `~/.config/JV880/rom_folder.txt` (`romFolderSettingsFile()`/
+   `loadPersistedRomFolderOverride()`/`savePersistedRomFolderOverride()` dans `PluginProcessor.cpp`
+   - toujours à cet emplacement fixe, indépendamment de ce que pointe l'override lui-même, pour
+   rester trouvable même si ce dossier a disparu). Nouveau bloc **"ROM Folder"** dans l'onglet
+   Settings (`SettingsTab.h`/`.cpp`) : chemin actuel affiché en clair, statut coloré (vert
+   "chargées" / orange "non trouvées ici"), boutons **Browse...** (sélecteur de dossier),
+   **Use Default** (retour au dossier par défaut), **Reload ROMs**.
+2. **Rapprochement de nom de fichier insensible à la casse** (`rom.cpp::loadRom()`) : si le nom
+   exact attendu (ex. `SR-JV80-08 Keyboards of the 60s and 70s - CS 0x3F1E3F0A.BIN`) n'existe pas
+   dans le dossier, une recherche de secours parcourt le contenu réel du dossier et matche en
+   ignorant la casse - un dump extrait/renommé légèrement différemment (typiquement `.bin` vs
+   `.BIN`) échouait silencieusement avant sur un système de fichiers sensible à la casse (Linux),
+   avec exactement le même symptôme que "aucune ROM du tout", sans indice. N'a aucun effet quand le
+   nom exact existe déjà (comportement inchangé dans le cas normal).
+3. **Rechargement sans redémarrer, interface principale toujours visible** : la boîte de dialogue
+   modale bloquante ("Cannot load ROMs...") a disparu - `VirtualJVEditor` affiche maintenant
+   toujours sa fenêtre principale, avec un jeu d'onglets réduit à **Settings seul**
+   (`showRomSetupOnly()`) tant que `processor.loaded` est faux, plutôt qu'une alerte OS et une
+   fenêtre par ailleurs vide. Le constructeur de `VirtualJVProcessor` a été refactoré :
+   `attemptLoadRoms()` (nouvelle méthode privée) contient tout ce qui, avant, s'exécutait
+   inconditionnellement après `preloadAll()` (démarrage du moteur, construction de `patchInfos[]`,
+   patches User, banque Performance, etc. - voir son propre commentaire dans `PluginProcessor.h`),
+   rejouable à l'identique. `retryLoadRoms()` (méthode publique) rappelle `attemptLoadRoms()` puis,
+   si ça réussit cette fois, prévient l'éditeur actif via `VirtualJVEditor::romsBecameAvailable()`
+   (même convention que `updatePerformanceTab()`) qui reconstruit le vrai jeu d'onglets en place -
+   aucun redémarrage de l'appli/du host nécessaire. **Volontairement limité au cas "jamais chargé
+   avec succès"** (gardé par `if (loaded) return...` à l'entrée d'`attemptLoadRoms()`/
+   `retryLoadRoms()`) : changer de dossier ROM une fois le moteur déjà démarré et en cours d'usage
+   n'est pas supporté (patchInfos[] contient des pointeurs bruts vers `loadedRoms`/
+   `expansionsDescr`, le thread audio peut lire `mcu` en parallèle) - `setRomsFolderOverride()`
+   persiste quand même le nouveau choix pour le prochain lancement dans ce cas, mais ne touche pas
+   au moteur déjà en marche.
+
+   Validé de bout en bout dans Xvfb isolé (voir la convention de test habituelle) : lancement avec
+   un dossier ROM vide → fenêtre principale visible, seul l'onglet Settings présent, message
+   orange "ROM files not found here...", chemin affiché correctement ; copie des 5 fichiers ROM
+   requis dans ce même dossier pendant que l'appli tourne, puis clic sur "Reload ROMs" → tous les
+   onglets (Browse/Performance/Common/Tone 1-4/Settings/Interface) apparaissent immédiatement,
+   patches listés, sans redémarrer le processus. Vérifié aussi que le menu contextuel Browse et
+   l'assignation Performance normale fonctionnent après ce rechargement à chaud, et qu'assigner
+   deux patches ROM-natifs (donc `expansionI=0xff` tous les deux) à deux Parts ne déclenche pas
+   l'alerte extensions-mixtes (faux positif évité).

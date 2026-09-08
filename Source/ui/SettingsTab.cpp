@@ -100,6 +100,52 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
   addAndMakeVisible(dspLoadLabel);
   dspLoadLabel.setText("DSP Load: -- %", juce::dontSendNotification);
 
+  addAndMakeVisible(romSectionHeaderLabel);
+  romSectionHeaderLabel.setText("ROM Folder", juce::dontSendNotification);
+  romSectionHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+
+  addAndMakeVisible(romStatusLabel);
+  addAndMakeVisible(romPathLabel);
+  romPathLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+  romPathLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+
+  addAndMakeVisible(romBrowseButton);
+  romBrowseButton.onClick = [this]
+  {
+    romFolderChooser = std::make_unique<juce::FileChooser>(
+        "Choose the folder containing your JV-880 ROM files", VirtualJVProcessor::getRomsFolder());
+    romFolderChooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+        [this](const juce::FileChooser &fc)
+        {
+          auto dir = fc.getResult();
+          if (dir == juce::File{})
+            return;
+          processor.setRomsFolderOverride(dir);
+          if (!processor.loaded)
+            processor.retryLoadRoms();
+          refreshRomSection();
+        });
+  };
+
+  addAndMakeVisible(romResetButton);
+  romResetButton.onClick = [this]
+  {
+    processor.setRomsFolderOverride(juce::File{});
+    if (!processor.loaded)
+      processor.retryLoadRoms();
+    refreshRomSection();
+  };
+
+  addAndMakeVisible(romReloadButton);
+  romReloadButton.onClick = [this]
+  {
+    processor.retryLoadRoms();
+    refreshRomSection();
+  };
+
+  refreshRomSection();
+
   startTimerHz(4);
 }
 
@@ -120,6 +166,28 @@ void SettingsTab::updateValues()
   reverbToggle.setToggleState((processor.mcu->nvram[0x02] >> 0) & 1, juce::dontSendNotification);
   chorusToggle.setToggleState((processor.mcu->nvram[0x02] >> 1) & 1, juce::dontSendNotification);
   masterVolumeSlider.setValue(processor.getMasterVolume() * 100.0, juce::dontSendNotification);
+  refreshRomSection();
+}
+
+void SettingsTab::refreshRomSection()
+{
+  if (processor.loaded)
+  {
+    romStatusLabel.setText("ROMs loaded.", juce::dontSendNotification);
+    romStatusLabel.setColour(juce::Label::textColourId, juce::Colours::lightgreen);
+    romReloadButton.setEnabled(false);
+  }
+  else
+  {
+    romStatusLabel.setText(
+        "ROM files not found here. Copy your JV-880 ROM dump into this folder (or pick a "
+        "different one below), then click Reload ROMs.",
+        juce::dontSendNotification);
+    romStatusLabel.setColour(juce::Label::textColourId, juce::Colours::orange);
+    romReloadButton.setEnabled(true);
+  }
+  romPathLabel.setText(VirtualJVProcessor::getRomsFolder().getFullPathName(),
+                       juce::dontSendNotification);
 }
 
 void SettingsTab::resized()
@@ -140,9 +208,19 @@ void SettingsTab::resized()
   masterVolumeSlider.setBounds(sliderLeft3, row2Top, width, height);
   dspLoadLabel      .setBounds(sliderLeft1 - 90, row2Top, width, height);
 
+  // ROM Folder section (Alan's request, 2026-09-08), between the DSP row and Audio/MIDI
+  // Settings - see refreshRomSection().
+  const auto romSectionTop = row2Top + height + 20;
+  romSectionHeaderLabel.setBounds(10, romSectionTop, 400, 22);
+  romStatusLabel.setBounds(10, romSectionTop + 24, getWidth() - 20, 36);
+  romPathLabel.setBounds(10, romSectionTop + 62, getWidth() - 20, 20);
+  romBrowseButton.setBounds(10, romSectionTop + 86, 110, 24);
+  romResetButton.setBounds(126, romSectionTop + 86, 110, 24);
+  romReloadButton.setBounds(242, romSectionTop + 86, 140, 24);
+
   // Below the rest (Alan's request, 2026-09-07) - this tab has plenty of unused vertical space
   // between row2Top and buildDateLabel's own fixed position already.
-  const auto audioSectionTop = row2Top + height + 30;
+  const auto audioSectionTop = romSectionTop + 86 + 24 + 20;
   audioSettingsHeaderLabel.setBounds(10, audioSectionTop, 400, 24);
 
   const auto audioContentTop = audioSectionTop + 30;

@@ -9,6 +9,8 @@
     <GROUP id="{BA05F489-649E-6AE4-7F62-10742B1AC120}" name="Assets">
       <FILE id="DiWlj3" name="VirtualJV Logo.svg" compile="0" resource="1"
             file="Assets/VirtualJV Logo.svg"/>
+      <FILE id="Jv880PnC" name="jv880_panel_compact.png" compile="0" resource="1"
+            file="Source/Resources/jv880_panel_compact.png"/>
     </GROUP>
     <GROUP id="{A9A4FE8C-A726-5731-A9C6-45A227C17A55}" name="Source">
       <FILE id="V15HPu" name="rom.cpp" compile="1" resource="0" file="Source/rom.cpp"/>

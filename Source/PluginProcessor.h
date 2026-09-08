@@ -136,6 +136,20 @@ public:
     float getMasterVolume() const { return masterVolume; }
     void setMasterVolume(float v) { masterVolume = juce::jlimit(0.0f, 1.0f, v); }
 
+    //==============================================================================
+    // ROM folder configuration (Alan's request, 2026-09-08): the default ROM location - the
+    // OS's own per-user app-data folder - isn't obvious to find on every machine, and "I copied
+    // the ROM files and it still didn't work" was hard to self-diagnose (no visible current
+    // path, no way to point elsewhere or retry without restarting). This exposes that as a
+    // Settings-tab control instead: getRomsFolder() for the resolved path to show, setRoms
+    // FolderOverride() to point at a different one (persisted; empty juce::File{} resets to the
+    // default), retryLoadRoms() to attempt loading again in place. See rom.h's own override
+    // functions for where this actually lives, and attemptLoadRoms()'s comment for why a retry
+    // is only meaningful (and only touches loadedRoms/romInfos) while not yet loaded.
+    static juce::File getRomsFolder();
+    void setRomsFolderOverride(const juce::File &dir);
+    bool retryLoadRoms();
+
     struct PatchInfo
     {
         const char* name;
@@ -173,6 +187,15 @@ public:
         uint8_t bank = 2;       // 0 = Internal, 2 = Preset A, 3 = Preset B (see performancePatchMapping())
         uint8_t number = 0;     // 0-63
         char name[16] = {0};    // display name, cached at assignment time
+        // 0xff: ROM-native (Internal/Preset A/B) or none - matches PatchInfo::expansionI's own
+        // convention. Tracked here (Alan's request, 2026-09-08) purely so sendPatchToPerformance
+        // Part() can warn - non-blockingly - when a Performance ends up mixing tone Parts from
+        // two different expansion boards: this single engine can only have one waverom_exp
+        // loaded at a time (see injectCustomPatchIntoInternalMemory()'s own comment), so whichever
+        // board was assigned most recently silently "wins" and the other Part(s) will sound
+        // wrong - a real hardware limitation, not a bug, but worth flagging since it's easy to
+        // trigger by accident from Browse's per-patch right-click menu.
+        uint8_t expansionI = 0xff;
         int midiChannel = 1;    // 1-16 - real firmware Parts always answer a single channel, no "all"
         int level = 100;        // 0-127
         int pan = 64;           // 0-127, 64 = centre (matches the firmware's own partpan field range)
@@ -307,6 +330,32 @@ private:
     // sendSysexParamChange() is just this with a 1-byte payload. Callers must already hold
     // mcuLock.
     void sendSysexBlock(uint32_t address, const uint8_t *data, size_t length);
+
+    // Unlocks expansion-ROM/User tone patches for a Performance Part (Alan's request,
+    // 2026-09-08): a Part can only reference the firmware's real Patch Memory by bank/number,
+    // never inline bytes - the 195 ROM-native patches (performancePatchMapping()) already live
+    // there verbatim, but anything else has to actually be copied in first. Confirmed empirically
+    // (see CLAUDE.md) that the real writable "Internal" Patch Memory bank is 64 contiguous 0x16a-
+    // byte slots at nvram[0x0d70..0x67f0) - slot 0 (0x0d70) is what this project already calls
+    // "Patch Temp" (setCurrentProgram()'s own target), so slots 1..7 are reserved here, one per
+    // tone Part, for whichever expansion/User patch that Part currently plays - plain memcpy,
+    // same technique setCurrentProgram() already uses, no SysEx involved. Rhythm sets (Part 8)
+    // aren't supported yet - real hardware stores those in a different, per-note memory area.
+    // Callers must already hold mcuLock.
+    void injectCustomPatchIntoInternalMemory(int patchInfoIndex, int internalSlot);
+
+    // Everything the constructor used to do unconditionally from "ROMs preloaded OK" onward
+    // (mcu->startSC55(), building patchInfos[]/patchInfoPerGroup, refreshUserPatches(),
+    // refreshPerformanceBank(), loadPerformanceSessionState(), setting loaded=true) - factored
+    // out (Alan's request, 2026-09-08) so retryLoadRoms() can re-run the exact same sequence
+    // after the user fixes the ROM folder, instead of requiring an app/host restart. Guarded by
+    // `if (loaded) return true;` at the top - safe to call repeatedly. Deliberately NOT used to
+    // support switching ROM folders on an ALREADY-loaded engine: patchInfos[] entries hold raw
+    // pointers into loadedRoms/expansionsDescr, performanceParts/status.patch may already
+    // reference them, and a live audio thread may be reading mcu concurrently - unwinding all of
+    // that safely is a bigger job than "fresh install, ROMs not found yet" warranted. See
+    // setRomsFolderOverride()'s own comment for the same boundary from the other side.
+    bool attemptLoadRoms();
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VirtualJVProcessor)

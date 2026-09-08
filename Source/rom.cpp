@@ -40,6 +40,23 @@ RomInfo romInfos[romCount] = {
     RomInfo{sz8M, "Custom.bin", "", true, "", false}
 };
 
+namespace {
+std::string g_romsDirOverride;
+
+juce::File resolveRomsDirectory() {
+  if (g_romsDirOverride.empty())
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("JV880");
+  return juce::File(g_romsDirOverride);
+}
+} // namespace
+
+void setRomsDirectoryOverride(const std::string &path) { g_romsDirOverride = path; }
+std::string getRomsDirectoryOverride() { return g_romsDirOverride; }
+std::string getEffectiveRomsDirectory() {
+  return resolveRomsDirectory().getFullPathName().toStdString();
+}
+
 int getRomIndex(std::string filename) {
   for (int i = 0; i < romCount; i++) {
     std::string fn = filename;
@@ -61,9 +78,7 @@ bool loadRom(int romI, uint8_t *dst, std::array<uint8_t *, romCount> &cache) {
 
   RomInfo *romInfo = &romInfos[romI];
 
-  juce::File romsDir(
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-          .getChildFile("JV880"));
+  juce::File romsDir(resolveRomsDirectory());
   if (!romsDir.exists())
     romsDir.createDirectory();
 
@@ -73,6 +88,20 @@ bool loadRom(int romI, uint8_t *dst, std::array<uint8_t *, romCount> &cache) {
 
   juce::File romFileUnscrambled(cacheDir.getChildFile(romInfo->filename));
   juce::File romFile(romsDir.getChildFile(romInfo->filename));
+
+  // Case-insensitive fallback (Alan's report, 2026-09-08): a ROM dump downloaded/extracted with
+  // a different tool or on a different OS often differs only in filename case from the exact
+  // name this project expects - on a case-sensitive filesystem (Linux) that used to fail exactly
+  // like "no ROM file at all", with nothing to tell the user why. Only kicks in when the exact
+  // name isn't there.
+  if (!romFile.existsAsFile()) {
+    for (const auto &candidate : romsDir.findChildFiles(juce::File::findFiles, false)) {
+      if (candidate.getFileName().equalsIgnoreCase(juce::String(romInfo->filename))) {
+        romFile = candidate;
+        break;
+      }
+    }
+  }
 
   bool shouldUnscramble = false;
   juce::File *finalFileToRead = nullptr;
@@ -172,9 +201,7 @@ bool preloadAll(std::array<uint8_t *, romCount> &cache) {
     //         openRomFolder);
   };
 
-  juce::File romsDir(
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-          .getChildFile("JV880"));
+  juce::File romsDir(resolveRomsDirectory());
   if (!romsDir.exists()) {
     romsDir.createDirectory();
     showNoRomFolderError();

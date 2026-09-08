@@ -76,5 +76,21 @@ private:
     // DSP load meter (Alan's request, 2026-09-07) - see VirtualJVProcessor::dspLoadMeasurer.
     juce::Label dspLoadLabel;
 
+    // ROM folder configuration (Alan's request, 2026-09-08) - see VirtualJVProcessor::
+    // getRomsFolder()/setRomsFolderOverride()/retryLoadRoms() for where this actually lives.
+    // Shown regardless of whether ROMs are currently loaded: this tab is reachable even when
+    // they aren't (see VirtualJVEditor::showRomSetupOnly()), which is the whole point - a user
+    // on a fresh machine can point this at wherever they put their ROM dump and retry without
+    // restarting the app/host.
+    juce::Label romSectionHeaderLabel;
+    juce::Label romStatusLabel;
+    juce::Label romPathLabel;
+    juce::TextButton romBrowseButton{"Browse..."};
+    juce::TextButton romResetButton{"Use Default"};
+    juce::TextButton romReloadButton{"Reload ROMs"};
+    std::unique_ptr<juce::FileChooser> romFolderChooser;
+
+    void refreshRomSection();
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SettingsTab)
 };

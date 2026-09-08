@@ -48,6 +48,10 @@ private:
     juce::TextEditor nameEditor;
 
     juce::Label channelHeader, levelHeader, panHeader;
+    // Toggles every Part's on/off state at once (Alan's request, 2026-09-08) - flips to whatever
+    // isn't the current majority state, so one click reliably does something visible instead of
+    // getting stuck re-clicking "all on" when they're already mixed.
+    juce::TextButton allOnOffButton{"All On/Off"};
 
     struct PartRow
     {

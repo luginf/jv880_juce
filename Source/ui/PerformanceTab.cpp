@@ -34,6 +34,24 @@ PerformanceTab::PerformanceTab(VirtualJVProcessor &p) : processor(p)
     addAndMakeVisible(*header);
   }
 
+  addAndMakeVisible(allOnOffButton);
+  allOnOffButton.onClick = [this]
+  {
+    int onCount = 0;
+    for (auto &row : partRows)
+      if (row.enabledToggle.getToggleState())
+        onCount++;
+    // Fewer than half on -> turn everything on; otherwise turn everything off. Either way at
+    // least one Part's state visibly changes, unlike a plain "toggle current state" which could
+    // silently do nothing if Parts were already mixed.
+    const bool target = onCount * 2 < (int)partRows.size();
+    for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++)
+    {
+      partRows[(size_t)i].enabledToggle.setToggleState(target, juce::dontSendNotification);
+      pushPartParams(i);
+    }
+  };
+
   for (int i = 0; i < VirtualJVProcessor::kNumPerformanceParts; i++)
   {
     auto &row = partRows[(size_t)i];
@@ -170,6 +188,8 @@ void PerformanceTab::resized()
   levelHeader.setBounds(headerX, y, sliderW, 18);
   headerX += sliderW + colGap;
   panHeader.setBounds(headerX, y, sliderW, 18);
+  headerX += sliderW + colGap;
+  allOnOffButton.setBounds(headerX, y - 2, toggleW + clearW, 22);
   y += 18 + 4;
 
   const int rowH = 26;
