@@ -241,7 +241,7 @@ void VirtualJVEditor::resized()
     }
     else
     {
-        topAreaH = (int)panelDisplay.heightForWidth((float)getWidth()) + (int)PanelSkin::kControlsRowH;
+        topAreaH = (int)panelDisplay.heightForWidth((float)getWidth());
         panelDisplay.setBounds(0, 0, getWidth(), topAreaH);
     }
 

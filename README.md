@@ -8,6 +8,13 @@ You can get the ROMs at:
 - [https://archive.org/download/roland-jv880-rom](https://archive.org/download/roland-jv880-rom)
 - and / or [https://archive.org/details/jv880_rompack_v1](https://archive.org/details/jv880_rompack_v1)
 
+And the official docs at:
+- [https://archive.org/details/synthmanual-roland-jv-880-owners-manual](https://archive.org/details/synthmanual-roland-jv-880-owners-manual) (in English)
+- [http://synthedoc.free.fr/Roland/Doc/Serie-JV/roland_jv880_fr.pdf](http://synthedoc.free.fr/Roland/Doc/Serie-JV/roland_jv880_fr.pdf) (in French)
+
+The [DOCS.md](DOCS.md) for this emulation.
+
+
 ![GUI Screenshot](./Assets/readme/gui-browse.gif)
 
 ## Plugin downloads

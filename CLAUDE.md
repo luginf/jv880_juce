@@ -979,3 +979,68 @@ temps posé que ce qui restait raisonnable à enchaîner d'affilée. À reprendr
 rigueur si Alan relance le sujet - point de départ : charger une Performance avec une SEULE Part
 non vide et tout le reste à zéro, diffé contre une Performance entièrement vide, pour isoler un
 seul champ à la fois plutôt que de deviner un layout entier d'un coup.
+
+## DSP Load : piste d'optimisation regardée, LTO activé sur Linux (2026-09-08)
+
+Alan a trouvé le DSP Load (voir la section plus haut) trop élevé et a demandé si une optimisation
+était possible. Investigation, toujours sur branche `panel` :
+
+- **`perf` indisponible dans ce sandbox** (machine partagée multi-utilisateurs,
+  `perf_event_paranoid=4` - refuse même la lecture d'événements CPU sans capacité root ; pas
+  question de toucher ce réglage noyau sur une machine partagée). Profilage par instrumentation
+  directe à la place : mesure du temps réel (`/usr/bin/time`) pour rendre N secondes d'audio via
+  la boucle self-test headless déjà existante (`updateSC55WithSampleRate()` en boucle serrée, sans
+  device audio ni fenêtre) - un proxy fiable pour le coût DSP, comparable avant/après un changement
+  donné.
+- **Le coût est structurel, pas un gaspillage évident** : `updateSC55WithSampleRate()`
+  (`Source/emulator/mcu.cpp`) exécute une instruction MCU réelle par tick à 64kHz
+  (`MCU_ReadInstruction()`, cycles fixes "12 par instruction" - commentaire `FIXME` déjà présent,
+  hérité de Nuked-SC55, pas quelque chose à changer sans risquer de casser la précision cycle-exacte
+  /la justesse audio), plus `PCM_Update()` (synthèse par oversampling), timers, UART. Le dispatch
+  des opcodes (`mcu_opcodes.cpp`) passe déjà par une table de pointeurs de fonctions
+  (`MCU_Opcode_Table[opcode](...)`), pas une chaîne de `if`/`switch` géante - donc pas de gain
+  évident à attendre là sans réécriture (un JIT, hors de portée raisonnable ici). Aucun flush de
+  denormals (`_MM_SET_FLUSH_ZERO_MODE`) trouvé nulle part dans le code - piste explorée mais peu
+  pertinente ici, le coeur MCU est très majoritairement en entiers, pas en flottants.
+- **Vrai gain trouvé, sans risque** : le générateur de Makefile Linux de Projucer/JUCE
+  (`jucer_ProjectExport_Make.h:55`, `linkTimeOptimisationValue.setDefault(false)`) désactive la
+  Link-Time Optimisation par défaut pour la config Release - contrairement aux exporters
+  Xcode/Visual Studio du même projet, qui la laissent à leur propre défaut (`!isDebug()` = activée
+  en Release) et en profitent donc déjà sans rien avoir eu à faire. Corrigé en ajoutant
+  `linkTimeOptimisation="1"` sur la `<CONFIGURATION>` Release du bloc `<LINUX_MAKE>` dans
+  `VirtualJV.jucer` (seul le build Linux Makefile avait besoin de cette correction explicite).
+  Mesuré par la méthode ci-dessus (4 paires de mesures entrelacées LTO/non-LTO, même binaire ROM,
+  même self-test) : **environ 2-3% de temps réel en moins** pour rendre le même volume d'audio -
+  un vrai gain, gratuit, mais modeste (pas le facteur significatif qu'on aurait pu espérer, cohérent
+  avec le fait que le coût est déjà structurel comme expliqué ci-dessus, pas de la redondance entre
+  fichiers que le LTO aurait pu éliminer). Non-régression vérifiée en rejouant
+  `JV880_SELFTEST_PERF2=1` sur le binaire LTO : mêmes peaks audio non nuls, mêmes bascules de mode
+  correctes - comportement identique, juste plus rapide. Au passage : `-flto` réduit aussi
+  sensiblement la taille des binaires livrés eux-mêmes (Standalone Release ~14 Mo -> ~7,4 Mo avant
+  strip, LV2/VST3 `.so` similaires) grâce à l'élimination de code mort inter-fichiers.
+- **Piste non retenue** : reconstruire les 4 moteurs MCU en parallèle sur un pool de threads -
+  obsolète depuis le passage au mode Performance v2 (un seul moteur, voir plus haut), rien à
+  paralléliser dans ce sens-là. Une vraie parallélisation interne au moteur MCU lui-même
+  (pipeline CPU/PCM sur des threads séparés) casserait très probablement l'exactitude cycle-à-cycle
+  dont dépend la justesse de l'émulation - pas une piste sérieuse pour ce projet.
+
+### `build/build-linux.sh` : strip systématique + suppression de `jv880.a` (2026-09-08)
+
+Alan a remarqué `jv880.a` (l'archive statique intermédiaire "Shared Code" que tous les autres
+binaires du build Linux lient déjà - VST3/LV2/Standalone/manifest helpers) traînant dans
+`build/` à 222 Mo, à côté d'un Standalone Debug non-strippé à 104 Mo. Le `.deb`/les zips de release
+ne l'embarquaient déjà pas (vérifié dans `.github/workflows/main.yml` - seuls `jv880.vst3`,
+`jv880.lv2`, le binaire `jv880`/`jv880.linux` et le `.deb` sont zippés/uploadés), donc pas un bug
+de release, juste un désagrément du dossier de build local/CI. `build/build-linux.sh` fait
+maintenant, après le `make CONFIG=Release` :
+- `strip` sur les trois binaires livrés (`build/jv880`, `build/jv880.lv2/jv880.so`,
+  `build/jv880.vst3/Contents/x86_64-linux/jv880.so`) - avant, seul `jv880` (Standalone) était
+  strippé à la main de temps en temps par habitude documentée plus haut dans ce fichier, jamais les
+  deux `.so` du VST3/LV2 alors qu'ils sont tout aussi livrés.
+- `rm -f build/jv880.a` - pur intermédiaire de lien, déjà présent dans les trois binaires ci-dessus
+  une fois `make` terminé, jamais nécessaire après coup. Sans risque pour un rebuild incrémental
+  suivant : `make` le regénère depuis les `.o` déjà en cache s'il en a de nouveau besoin.
+
+Le geste manuel "`strip build/jv880` après un build Debug de dev/test" (déjà documenté plus haut
+dans ce fichier) reste une habitude séparée à garder - `build-linux.sh` ne construit que la config
+Release et n'est pas ce qu'Alan lance pour un cycle de test rapide en Debug.

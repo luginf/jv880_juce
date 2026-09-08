@@ -75,10 +75,6 @@ public:
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
-    // Natural height of the "Hold DATA while rotating" row this component lays out below the
-    // photo itself - callers sizing this component need to add this on top of heightForWidth().
-    static constexpr float kControlsRowH = 30.0f;
-
 private:
     void timerCallback() override; // ~25Hz repaint while the live LCD is embedded, same rate as
                                     // LCDisplay's own RedrawTimer - stopped when it isn't (kCommands).
@@ -153,7 +149,7 @@ private:
     // documents (hold TONE SELECT + press a TONE SWITCH to pick which Tone to edit; hold PARAM
     // SHIFT - the same cap's other printed function - + press -/+ to change a value regardless of
     // cursor position). Applies to every button in kButtons except none are excluded - DATA and
-    // VOLUME aren't in kButtons and have their own separate latching (dataHoldToggle; VOLUME has
+    // VOLUME aren't in kButtons and have their own separate latching (dataHeld; VOLUME has
     // no latched/held state at all, only its own right-click-for-PREVIEW).
     bool buttonLatched[kNumButtons] = {false};
 
@@ -168,8 +164,6 @@ private:
     juce::Image panelImage;
     juce::Image lcdImage; // the emulator's own live dot-matrix render, re-fetched on each timer tick
 
-    juce::ToggleButton dataHoldToggle{"Hold DATA while rotating"};
-
     int pressedButtonIndex = kHitNone;
     float dialDragStartY = 0.0f;
     int dialStepsFired = 0;
@@ -177,11 +171,13 @@ private:
     static constexpr float kDialPxPerStep = 6.0f;
     static constexpr float kDialDegPerStep = 14.0f;
     static constexpr float kVolumeDragRangePx = 150.0f; // px of vertical drag spanning the full 0..1 range
-    // DATA-held state lives entirely in dataHoldToggle now (Alan's request, 2026-09-08): ticking
-    // it, Ctrl-clicking the dial, or right-clicking the dial all just toggle that same checkbox
-    // (which already owns sending MCU_BUTTON_DATA down/up) - so it stays held after mouse-up/Ctrl
-    // release too, "comme pour le D110", rather than only for the duration of one drag. See
+    // DATA-held state (Alan's request, 2026-09-08): Ctrl-clicking or right-clicking the dial
+    // toggles this flag via toggleDataHeld() (which also owns sending MCU_BUTTON_DATA down/up) -
+    // so it stays held after mouse-up/Ctrl release too, "comme pour le D110", rather than only
+    // for the duration of one drag. No separate on-screen checkbox anymore (Alan's request,
+    // 2026-09-08 - redundant with the two click gestures that already toggle it). See
     // mouseDown()'s own comment for the dial.
+    bool dataHeld = false;
 
     // VOLUME/PREVIEW knob (Alan's request, 2026-09-08): unlike DATA, this one has a real
     // continuous parameter of its own (the plugin-side Master Volume, same value the Settings

@@ -44,25 +44,16 @@ PanelSkin::PanelSkin(VirtualJVProcessor &p, Variant initialVariant, LCDisplay *l
     : processor(p), variant(initialVariant), lcdColorMenuOwner(lcdColorMenuOwnerIn)
 {
     setVariant(initialVariant);
-
-    dataHoldToggle.onClick = [this]
-    {
-        if (processor.loaded && processor.mcu)
-            processor.mcu->lcd.LCD_SendButton(MCU_BUTTON_DATA, dataHoldToggle.getToggleState() ? 1 : 0);
-    };
-    addAndMakeVisible(dataHoldToggle);
 }
 
-// Flips dataHoldToggle and sends MCU_BUTTON_DATA accordingly - same effect as the checkbox's own
-// onClick above (which JUCE calls after it has already flipped the toggle state itself, for an
-// actual user click), factored out so Ctrl-click/right-click on the dial (mouseDown below) can
-// trigger the exact same toggle programmatically without relying on setToggleState()'s own
-// notification semantics to (maybe) reach onClick.
+// Flips dataHeld and sends MCU_BUTTON_DATA accordingly - Ctrl-click or right-click on the dial
+// (mouseDown below) are the only two ways to trigger this now (Alan's request, 2026-09-08: the
+// separate "Hold DATA while rotating" checkbox was redundant with those and removed).
 void PanelSkin::toggleDataHeld()
 {
-    dataHoldToggle.setToggleState(!dataHoldToggle.getToggleState(), juce::dontSendNotification);
+    dataHeld = !dataHeld;
     if (processor.loaded && processor.mcu)
-        processor.mcu->lcd.LCD_SendButton(MCU_BUTTON_DATA, dataHoldToggle.getToggleState() ? 1 : 0);
+        processor.mcu->lcd.LCD_SendButton(MCU_BUTTON_DATA, dataHeld ? 1 : 0);
 }
 
 void PanelSkin::setVariant(Variant v)
@@ -85,8 +76,6 @@ void PanelSkin::resized()
     imageScale = variant.refW > 0.0f ? w / variant.refW : 1.0f;
     const float h = kMasterRefH * imageScale;
     imageDrawArea = juce::Rectangle<float>(0.0f, 0.0f, w, h);
-
-    dataHoldToggle.setBounds(10, (int)h + 2, juce::jmax(260, getWidth() - 20), (int)kControlsRowH - 4);
 }
 
 juce::Point<float> PanelSkin::refToComponent(juce::Point<float> ref) const
@@ -211,9 +200,9 @@ void PanelSkin::mouseDown(const juce::MouseEvent &e)
     {
         dialDragStartY = e.position.y;
         dialStepsFired = 0;
-        // Ctrl-click or right-click toggles the "Hold DATA while rotating" checkbox itself
-        // (Alan's request, 2026-09-08 - "comme pour le D110": stays held after release, same as
-        // the general per-button latching just below, not just for the duration of one drag).
+        // Ctrl-click or right-click toggles the DATA-held state itself (Alan's request,
+        // 2026-09-08 - "comme pour le D110": stays held after release, same as the general
+        // per-button latching just below, not just for the duration of one drag).
         // Doesn't need a drag to have happened - a plain click/right-click is enough to toggle.
         if (e.mods.isCtrlDown() || e.mods.isRightButtonDown())
             toggleDataHeld();
@@ -435,14 +424,14 @@ void PanelSkin::paint(juce::Graphics &g)
         g.drawEllipse(c.x - r, c.y - r, r * 2.0f, r * 2.0f, 2.5f);
     }
 
-    // DATA hold-state ring (Alan's request, 2026-09-08): shown whenever dataHoldToggle is on, not
+    // DATA hold-state ring (Alan's request, 2026-09-08): shown whenever dataHeld is on, not
     // just while actively dragging - "reste enfoncé" (stays engaged) should read as such at rest
     // too, not just mid-gesture. Falls back to the plain "something's happening" ring while the
     // dial is merely being clicked/dragged without being held.
     {
         auto c = refToComponent({kDialCx, kDialCy});
         float r = kDialR * imageScale;
-        if (dataHoldToggle.getToggleState())
+        if (dataHeld)
         {
             g.setColour(juce::Colours::yellow.withAlpha(0.65f));
             g.drawEllipse(c.x - r - 2.0f, c.y - r - 2.0f, (r + 2.0f) * 2.0f, (r + 2.0f) * 2.0f, 3.5f);
