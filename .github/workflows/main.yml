@@ -154,15 +154,21 @@ jobs:
           merge-multiple: true
       - run: ls -R dist
       # Rolling "latest" prerelease, rebuilt/overwritten on every push to main - unchanged
-      # behaviour, still what the README's own download links point at.
+      # behaviour, still what the README's own download links point at. Was
+      # marvinpinto/action-automatic-releases (2026-09-09: started failing here with an uncaught
+      # exception right as it tried to talk to the GitHub API - that action has been unmaintained
+      # for years and doesn't survive GitHub's Node 20->24 forced runner upgrade). Switched to the
+      # same softprops/action-gh-release the tagged release below already uses - it upserts a
+      # release by tag_name rather than requiring a brand new one each time, so pointing it at the
+      # fixed "latest" tag reproduces the same rolling behaviour.
       - name: "Publish rolling latest prerelease"
         if: github.ref == 'refs/heads/main'
-        uses: "marvinpinto/action-automatic-releases@latest"
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          tag_name: latest
+          name: jiv881 Latest
           prerelease: true
-          automatic_release_tag: latest
-          title: jiv881 Latest
+          generate_release_notes: true
           files: |
             dist/**/*
       # Permanent, versioned release (Alan's request, 2026-09-08 - "il faudra tagger et avoir
