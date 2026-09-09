@@ -8,6 +8,8 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "sequencer/JivSequencerSongsFile.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -108,6 +110,24 @@ VirtualJVProcessor::DisplayMode loadPersistedDisplayMode() {
   return VirtualJVProcessor::DisplayMode::LcdOnly;
 }
 
+// Sequencer enable/disable persistence (Alan's request, 2026-09-09 - "il faudra pouvoir le
+// supprimer") - same fixed-location-regardless-of-content reasoning as the settings files
+// above.
+juce::File sequencerEnabledSettingsFile() {
+  return appDataBaseDir().getChildFile("sequencer_enabled.txt");
+}
+
+bool loadPersistedSequencerEnabled() {
+  auto file = sequencerEnabledSettingsFile();
+  return file.existsAsFile() && file.loadFileAsString().trim().getIntValue() != 0;
+}
+
+void savePersistedSequencerEnabled(bool enabled) {
+  auto file = sequencerEnabledSettingsFile();
+  file.getParentDirectory().createDirectory();
+  file.replaceWithText(enabled ? "1" : "0");
+}
+
 void savePersistedDisplayMode(VirtualJVProcessor::DisplayMode mode) {
   auto file = displayModeSettingsFile();
   file.getParentDirectory().createDirectory();
@@ -135,7 +155,25 @@ VirtualJVProcessor::VirtualJVProcessor()
       setRomsDirectoryOverride(overrideDir.getFullPathName().toStdString());
   }
 
+  // Sequencer channel source: each track IS a Performance Part, so unlike the D-110 project
+  // this was ported from, there's no firmware RAM to poll per-block - performanceParts[] is
+  // already plain processor state, read directly. Set once here (the lambda itself never
+  // changes) rather than refreshed per-block, since it captures `this` and always reads the
+  // live array.
+  sequencerEngine.setChannelSource([this](int track) {
+    return (track >= 0 && track < kNumPerformanceParts) ? performanceParts[track].midiChannel : 1;
+  });
+
+  if (wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    sequencerEnabled = loadPersistedSequencerEnabled();
+
   attemptLoadRoms();
+
+  // Deliberately after attemptLoadRoms(), not before: loadSequencerState() re-resolves each
+  // track's stored patch against patchInfos[] (see its own comment), which doesn't exist yet
+  // until ROMs/expansions/User patches have actually been loaded.
+  if (sequencerEnabled)
+    loadSequencerState();
 }
 
 // See this method's own comment in PluginProcessor.h.
@@ -1064,7 +1102,181 @@ void VirtualJVProcessor::setDisplayMode(DisplayMode mode) {
       e->refreshDisplayMode();
 }
 
+// --- Sequencer (Standalone only) -----------------------------------------------------------
+
+juce::File VirtualJVProcessor::sequencerStateFile() {
+  return appDataBaseDir().getChildFile("sequencer_state.midiseq");
+}
+
+void VirtualJVProcessor::saveSequencerState() {
+  jivseq::exportSongsFile(sequencerEngine, sequencerStateFile());
+}
+
+void VirtualJVProcessor::loadSequencerState() {
+  auto file = sequencerStateFile();
+  if (!file.existsAsFile())
+    return;
+  jivseq::importSongsFile(sequencerEngine, file);
+
+  // Re-resolve each track's stored patch (see JivSequencerEngine::TrackPatch's own comment):
+  // the raw index saved last session may no longer point at the same patch if the set of
+  // loaded expansion ROMs/User patches has changed since. Only needed once here, right after
+  // import - every other read of a track's patch (handleAsyncUpdate(), getTrackPatchName())
+  // just trusts whatever index setTrackPatch() last stored, same as PerformancePart does with
+  // its own bank/number.
+  for (int t = 0; t < kNumPerformanceParts; ++t) {
+    auto patch = sequencerEngine.getTrackPatch(t);
+    if (patch.index < 0)
+      continue;
+    const bool stillValid = patch.index < romPatchCapacity + userPatchCapacity
+                             && patchInfos[patch.index].present
+                             && patchInfos[patch.index].drums == patch.isRhythm
+                             && (int)patchInfos[patch.index].expansionI == patch.expansionI
+                             && juce::String(patchInfos[patch.index].name,
+                                              (size_t)patchInfos[patch.index].nameLength) == patch.name;
+    if (stillValid)
+      continue;
+
+    int foundIndex = -1;
+    for (int i = 0; i < romPatchCapacity + userPatchCapacity; ++i) {
+      auto &info = patchInfos[i];
+      if (!info.present || info.drums != patch.isRhythm || (int)info.expansionI != patch.expansionI)
+        continue;
+      if (juce::String(info.name, (size_t)info.nameLength) == patch.name) {
+        foundIndex = i;
+        break;
+      }
+    }
+    patch.index = foundIndex;
+    sequencerEngine.setTrackPatch(t, patch);
+  }
+}
+
+// Doesn't discard any recorded songs either way - disabling only hides the drawer/stops the
+// transport (see VirtualJVEditor::refreshSequencerVisibility()), re-enabling just shows it
+// again with whatever was already there. State is saved right here on the way to disabled
+// (there'll be no destructor-time save to rely on once sequencerEnabled is false - see
+// ~VirtualJVProcessor()) and reloaded on the way to enabled, in case it was disabled, edited
+// externally (unlikely but cheap to guard against), then re-enabled within the same session.
+void VirtualJVProcessor::setSequencerEnabled(bool enabled) {
+  if (enabled == sequencerEnabled)
+    return;
+
+  if (!enabled)
+    saveSequencerState();
+
+  sequencerEnabled = enabled;
+  savePersistedSequencerEnabled(enabled);
+
+  if (enabled)
+    loadSequencerState();
+
+  if (auto editor = getActiveEditor())
+    if (auto e = dynamic_cast<VirtualJVEditor *>(editor))
+      e->refreshSequencerVisibility();
+}
+
+void VirtualJVProcessor::exportSequencerSongs(const juce::File &file) {
+  jivseq::exportSongsFile(sequencerEngine, file);
+}
+
+void VirtualJVProcessor::importSequencerSongs(const juce::File &file) {
+  jivseq::importSongsFile(sequencerEngine, file);
+}
+
+// Right-click STOP - all notes off on every channel, straight into the firmware's own MIDI IN,
+// same mechanism as any other direct-injected message in this file (e.g. the self-test code
+// above). Called from the message thread (a mouse click), so - unlike the audio-thread-only
+// processBlock() sequencer block below - this needs mcuLock itself, same convention
+// sendSysexParamChange() already follows for its own UI-thread callers.
+void VirtualJVProcessor::midiPanic() {
+  mcuLock.enter();
+  for (int channel = 1; channel <= 16; ++channel) {
+    uint8_t allNotesOff[3] = {static_cast<uint8_t>(0xB0 | (channel - 1)), 123, 0};
+    mcu->postMidiSC55(allNotesOff, 3);
+  }
+  mcuLock.exit();
+}
+
+// Channel is NOT decoupled the way patch/volume/pan are - see sequencerEngine's own comment
+// in PluginProcessor.h. Writes straight into the live Part, same as the Performance tab's own
+// channel control would (setPerformancePartParams()), so both stay in sync automatically.
+void VirtualJVProcessor::setTrackChannel(int track, int channel) {
+  if (track < 0 || track >= kNumPerformanceParts)
+    return;
+  auto &part = performanceParts[track];
+  setPerformancePartParams(track, channel, part.level, part.pan, part.enabled);
+}
+
+int VirtualJVProcessor::getTrackVolumeHint(int track) const {
+  if (track < 0 || track >= kNumPerformanceParts)
+    return -1;
+  return performanceParts[track].level;
+}
+
+int VirtualJVProcessor::getTrackPanHint(int track) const {
+  if (track < 0 || track >= kNumPerformanceParts)
+    return -1;
+  return performanceParts[track].pan;
+}
+
+// See sequencerEngine's own comment in PluginProcessor.h - resolves patchInfoIndex into the
+// same content-identity PerformancePart itself stores (bank/number aren't kept here: unlike
+// PerformancePart, an expansion/User patch's actual bytes still need injecting at push time -
+// see handleAsyncUpdate() - and that's index-driven, not bank/number-driven, see
+// sendPatchToPerformancePart()'s own comment on why injected patches land at bank=0,
+// number=partIndex+1 regardless of their real identity).
+void VirtualJVProcessor::setSequencerTrackPatch(int track, int patchInfoIndex) {
+  if (track < 0 || track >= kNumPerformanceParts)
+    return;
+  if (patchInfoIndex < 0 || patchInfoIndex >= romPatchCapacity + userPatchCapacity
+      || !patchInfos[patchInfoIndex].present)
+    return;
+
+  auto &info = patchInfos[patchInfoIndex];
+  const bool wantsRhythmPart = (track == kNumPerformanceParts - 1);
+  if (info.drums != wantsRhythmPart)
+    return;
+
+  jivseq::JivSequencerEngine::TrackPatch patch;
+  patch.index = patchInfoIndex;
+  patch.name = juce::String(info.name, (size_t)info.nameLength);
+  patch.expansionI = (uint8_t)info.expansionI;
+  patch.isRhythm = info.drums;
+  sequencerEngine.setTrackPatch(track, patch);
+}
+
+juce::String VirtualJVProcessor::getTrackPatchName(int track) const {
+  if (track < 0 || track >= kNumPerformanceParts)
+    return {};
+  return sequencerEngine.getTrackPatch(track).name;
+}
+
+// See this method's own declaration comment in PluginProcessor.h. Runs on the message thread,
+// so - unlike the audio-thread edge detection that triggered it - it's safe to do everything
+// sendPatchToPerformancePart() already does (including a multi-megabyte waverom_exp copy for
+// an expansion patch, and the mixed-expansion AlertWindow) and to call setPerformancePartParams()
+// for volume/pan.
+void VirtualJVProcessor::handleAsyncUpdate() {
+  for (int t = 0; t < kNumPerformanceParts; ++t) {
+    const auto patch = sequencerEngine.getTrackPatch(t);
+    if (patch.index >= 0)
+      sendPatchToPerformancePart(patch.index, t);
+
+    const int volume = sequencerEngine.getTrackVolume(t);
+    const int pan = sequencerEngine.getTrackPan(t);
+    if (volume >= 0 || pan >= 0) {
+      auto &part = performanceParts[t];
+      setPerformancePartParams(t, part.midiChannel, volume >= 0 ? volume : part.level,
+                                pan >= 0 ? pan : part.pan, part.enabled);
+    }
+  }
+}
+
 VirtualJVProcessor::~VirtualJVProcessor() {
+  if (wrapperType == juce::AudioProcessor::wrapperType_Standalone && sequencerEnabled)
+    saveSequencerState();
+
   mcuLock.enter();
   delete mcu;
   mcuLock.exit();
@@ -1874,6 +2086,65 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
   const int numSamples = buffer.getNumSamples();
 
+  // --- Sequencer (Standalone build only, Alan's request, 2026-09-09) ---------------------
+  // Ported from the D-110 project's own processBlock() sequencer block, simplified: no per-
+  // block firmware-RAM channel refresh needed (channelForTrack() already reads
+  // performanceParts[] directly, wired once in the constructor) and no Program Change/Bank
+  // resync block at all (JivSequencerHost::supportsProgramChange() stays false - see that
+  // file's own top comment). Capture reads midiMessages as received (host/keyboard input)
+  // BEFORE the sequencer's own playback is merged into it below, so the sequencer never
+  // captures its own notes back into whatever track is armed.
+  if (wrapperType == juce::AudioProcessor::wrapperType_Standalone && sequencerEnabled)
+  {
+    // PLAY/REC-edge patch/volume/pan recall (Alan's request, 2026-09-09) - see
+    // handleAsyncUpdate()'s own comment for why this only flags the request here rather than
+    // doing the actual work on the audio thread.
+    const bool nowSequencerPlaying = sequencerEngine.isPlaying();
+    if (nowSequencerPlaying && !wasSequencerPlayingForPatchPush)
+      triggerAsyncUpdate();
+    wasSequencerPlayingForPatchPush = nowSequencerPlaying;
+
+    const double beatsPerSample = (sequencerEngine.getTempo() / 60.0) / getSampleRate();
+    const double windowStartBeats = sequencerEngine.getPositionBeats();
+    const int armed = sequencerEngine.isRecording() ? sequencerEngine.getArmedTrack() : -1;
+    if (armed >= 0)
+    {
+      const int armedChannel = sequencerEngine.channelForTrack(armed);
+      for (const auto metadata : midiMessages)
+      {
+        const auto &msg = metadata.getMessage();
+        if (msg.isNoteOnOrOff() && msg.getChannel() == armedChannel)
+          sequencerEngine.captureEvent(
+              msg, windowStartBeats + static_cast<double>(metadata.samplePosition) * beatsPerSample);
+      }
+    }
+
+    const int stepArmed = sequencerEngine.isStepRecording() ? sequencerEngine.getArmedTrack() : -1;
+    if (stepArmed >= 0)
+    {
+      const int armedChannel = sequencerEngine.channelForTrack(stepArmed);
+      for (const auto metadata : midiMessages)
+      {
+        const auto &msg = metadata.getMessage();
+        if (msg.getChannel() != armedChannel) continue;
+        if (msg.isNoteOn()) sequencerEngine.stepNoteOn(msg.getNoteNumber(), msg.getVelocity());
+        else if (msg.isNoteOff()) sequencerEngine.stepNoteOff(msg.getNoteNumber());
+      }
+    }
+
+    // Rendered straight into midiMessages (rather than a separate buffer merged in later,
+    // like the D-110 project does for its own additional direct-MIDI-Out step) - this project
+    // has no such external MIDI Out port to also feed (Alan's own call, 2026-09-09: "je
+    // n'utilise pas le vrai synthé hardware"), so there's nothing else that needs to tell
+    // sequencer-originated notes apart from host/keyboard-originated ones.
+    juce::MidiBuffer sequencerOut;
+    sequencerClicks.clear();
+    sequencerEngine.renderInto(sequencerOut, numSamples, getSampleRate(),
+                                sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
+    for (const auto metadata : sequencerOut)
+      midiMessages.addEvent(metadata.getMessage(), metadata.samplePosition);
+  }
+
   for (const auto metadata : midiMessages)
   {
     auto message = metadata.getMessage();
@@ -1895,6 +2166,43 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
   float *channelDataR = buffer.getWritePointer(1);
 
   mcu->updateSC55WithSampleRate(channelDataL, channelDataR, numSamples, (int)getSampleRate());
+
+  // Internal metronome click synthesis (ported from the D-110 project's own processBlock(),
+  // see this file's own MetronomeClick member comments) - the alternative to real notes on the
+  // rhythm channel, active whenever getMetronomeUseChannel10() is off. The
+  // metronomeSamplesRemaining > 0 half of the condition matters even on blocks with no NEW
+  // click: a click's ~30ms decay outlives a typical audio block, so this keeps ringing it out
+  // smoothly across block boundaries instead of pausing and dumping the rest late.
+  if (wrapperType == juce::AudioProcessor::wrapperType_Standalone && sequencerEnabled
+      && (!sequencerClicks.empty() || metronomeSamplesRemaining > 0)
+      && !sequencerEngine.getMetronomeUseChannel10())
+  {
+    constexpr double kClickSeconds = 0.03;
+    const int clickTotalSamples = juce::jmax(1, static_cast<int>(getSampleRate() * kClickSeconds));
+    const float volume = sequencerEngine.getMetronomeVolume();
+    int cursor = 0;
+    auto ringUpTo = [&](int endSample) {
+      for (int i = cursor; i < endSample; ++i)
+      {
+        if (metronomeSamplesRemaining <= 0) continue;
+        const float amp = static_cast<float>(metronomeSamplesRemaining) / static_cast<float>(clickTotalSamples);
+        const float s = std::sin(metronomePhase) * amp * 0.25f * volume;
+        metronomePhase += juce::MathConstants<double>::twoPi * metronomeFreq / getSampleRate();
+        channelDataL[i] += s;
+        channelDataR[i] += s;
+        --metronomeSamplesRemaining;
+      }
+    };
+    for (const auto &click : sequencerClicks)
+    {
+      ringUpTo(click.samplePosition);
+      cursor = click.samplePosition;
+      metronomeSamplesRemaining = clickTotalSamples;
+      metronomeFreq = click.downbeat ? 1500.0 : 1000.0;
+      metronomePhase = 0.0;
+    }
+    ringUpTo(numSamples);
+  }
 
   mcuLock.exit();
 

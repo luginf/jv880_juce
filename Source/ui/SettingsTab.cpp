@@ -160,6 +160,17 @@ SettingsTab::SettingsTab(VirtualJVProcessor &p) : processor(p)
     processor.setDisplayMode((VirtualJVProcessor::DisplayMode)(displayModeCombo.getSelectedId() - 1));
   };
 
+  if (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+  {
+    addAndMakeVisible(sequencerSectionHeaderLabel);
+    sequencerSectionHeaderLabel.setText("Sequencer", juce::dontSendNotification);
+    sequencerSectionHeaderLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+
+    addAndMakeVisible(sequencerToggle);
+    sequencerToggle.setToggleState(processor.getSequencerEnabled(), juce::dontSendNotification);
+    sequencerToggle.addListener(this);
+  }
+
   startTimerHz(4);
 }
 
@@ -227,6 +238,11 @@ void SettingsTab::resized()
   displaySectionHeaderLabel.setBounds(10, displaySectionTop, 200, 22);
   displayModeCombo.setBounds(220, displaySectionTop, 220, 24);
 
+  // Sequencer on/off (Alan's request, 2026-09-09) - same row as Display, right-aligned; only
+  // present at all (see the constructor) in a Standalone build.
+  sequencerSectionHeaderLabel.setBounds(460, displaySectionTop, 120, 22);
+  sequencerToggle.setBounds(580, displaySectionTop, 220, 24);
+
   // ROM Folder section (Alan's request, 2026-09-08), between Display and Audio/MIDI Settings -
   // see refreshRomSection().
   const auto romSectionTop = displaySectionTop + 22 + 20;
@@ -288,6 +304,9 @@ void SettingsTab::buttonClicked(juce::Button *button)
     break;
   case Chorus:
     processor.sendSysexParamChange(0x05, chorusToggle.getToggleState());
+    break;
+  case SequencerEnabled:
+    processor.setSequencerEnabled(sequencerToggle.getToggleState());
     break;
   }
 }

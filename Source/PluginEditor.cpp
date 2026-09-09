@@ -40,6 +40,20 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         resized();
     };
 
+    // Second drawer, below the keyboard - see PluginEditor.h's own comment on sequencerPanel.
+    // The handle itself always exists (cheap); the panel it collapses is only ever created by
+    // refreshSequencerVisibility() (called at the very end of this constructor, once `tabs` is
+    // actually populated - see that call site's own comment for why the ordering matters).
+    sequencerHandle.setLabel("Sequencer");
+    sequencerHandle.setExpanded(!sequencerCollapsed);
+    sequencerHandle.onClick = [this]
+    {
+        sequencerCollapsed = !sequencerCollapsed;
+        sequencerHandle.setExpanded(!sequencerCollapsed);
+        if (sequencerPanel) sequencerPanel->setVisible(!sequencerCollapsed);
+        resized();
+    };
+
     tabs.tabChangedFunction =
         [this](int index)
         {
@@ -100,6 +114,16 @@ VirtualJVEditor::VirtualJVEditor(VirtualJVProcessor &p)
         setSelectedTab(processor.status.selectedTab);
         updateEditTabs();
     }
+
+    // Called last, deliberately - it can call resized() internally (see its own body), and
+    // doing that any earlier than this crashed in a Debug build (2026-09-09): tabs.setBounds()
+    // inside a premature resized() touched TabbedComponent/Viewport internals before `tabs` had
+    // any tabs added yet or the fixed-layout Viewports above were configured, tripping a JUCE
+    // juce::Array bounds assertion (juce_ArrayBase.h:163) deep in there. Constructing everything
+    // else in this editor first, THEN wiring up the sequencer drawer, avoids the whole class of
+    // problem rather than only hiding it (jassert is compiled out in Release, so this would have
+    // kept silently relying on undefined behaviour there instead of actually being fixed).
+    refreshSequencerVisibility();
 }
 
 void VirtualJVEditor::showRomSetupOnly()
@@ -228,6 +252,11 @@ void VirtualJVEditor::resized()
 {
     const int handleH = 18;
     const int keyboardH = keyboardCollapsed ? 0 : (int)VirtualKeyboard::kRefH;
+    // Second handle+drawer, only when the sequencer is actually turned on (see
+    // refreshSequencerVisibility()) - both stay 0 otherwise, so the layout below is identical
+    // to before this feature existed whenever it's off.
+    const int sequencerHandleH = sequencerPanel ? handleH : 0;
+    const int sequencerH = (sequencerPanel && !sequencerCollapsed) ? (int)JivSequencerPanel::kRefH : 0;
 
     // Top strip height depends on processor.displayMode (see PluginEditor.h's own comment on
     // lcd/panelDisplay): LcdOnly is the fixed 820x100 it's always been; the panel modes scale
@@ -245,11 +274,38 @@ void VirtualJVEditor::resized()
         panelDisplay.setBounds(0, 0, getWidth(), topAreaH);
     }
 
-    const int tabsH = juce::jmax(0, getHeight() - topAreaH - handleH - keyboardH);
+    const int tabsH = juce::jmax(0, getHeight() - topAreaH - handleH - keyboardH - sequencerHandleH - sequencerH);
 
     tabs.setBounds(0, topAreaH, 820, tabsH);
     keyboardHandle.setBounds(0, topAreaH + tabsH, getWidth(), handleH);
     virtualKeyboard.setBounds(0, topAreaH + tabsH + handleH, getWidth(), keyboardH);
+    if (sequencerPanel)
+    {
+        const int seqY = topAreaH + tabsH + handleH + keyboardH;
+        sequencerHandle.setBounds(0, seqY, getWidth(), sequencerHandleH);
+        sequencerPanel->setBounds(0, seqY + sequencerHandleH, getWidth(), sequencerH);
+    }
+}
+
+void VirtualJVEditor::refreshSequencerVisibility()
+{
+    const bool wantIt = processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone
+                         && processor.getSequencerEnabled();
+
+    if (wantIt && sequencerPanel == nullptr)
+    {
+        sequencerPanel = std::make_unique<JivSequencerPanel>(processor);
+        addAndMakeVisible(*sequencerPanel);
+        addAndMakeVisible(sequencerHandle);
+        sequencerPanel->setVisible(!sequencerCollapsed);
+    }
+    else if (!wantIt && sequencerPanel != nullptr)
+    {
+        sequencerHandle.setVisible(false);
+        sequencerPanel.reset();
+    }
+
+    resized();
 }
 
 void VirtualJVEditor::refreshDisplayMode()

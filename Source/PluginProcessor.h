@@ -16,6 +16,8 @@
 #include <JuceHeader.h>
 #include "emulator/mcu.h"
 #include "rom.h"
+#include "sequencer/JivSequencerEngine.h"
+#include "sequencer/JivSequencerHost.h"
 #include "ui/widgets/VirtualKeyboardHost.h"
 
 constexpr int NUM_EXPS = romCount - 6;
@@ -37,7 +39,8 @@ constexpr int userGroupIndex = NUM_EXPS + 1;
 
 class VirtualJVEditor;
 
-class VirtualJVProcessor  : public juce::AudioProcessor, public VirtualKeyboardHost
+class VirtualJVProcessor  : public juce::AudioProcessor, public VirtualKeyboardHost, public JivSequencerHost,
+                             public juce::AsyncUpdater
 {
 public:
     //==============================================================================
@@ -295,7 +298,111 @@ public:
     // polled by SettingsTab on a Timer - see AudioProcessLoadMeasurer's own header for details.
     juce::AudioProcessLoadMeasurer dspLoadMeasurer;
 
+    // --- Sequencer (Standalone build only, Alan's request, 2026-09-09) ---------------------
+    // A D-20-style multitrack step sequencer, ported from the D-110 emulator's own embedded
+    // sequencer drawer (~/src/D110/d110-vst-emulator, docs/sequencer.md) - see
+    // Source/sequencer/JivSequencerEngine.h's own header comment for the porting story. Always
+    // exists as a plain member in every build (JivSequencerEngine has no plugin-format
+    // dependency, and this project's Standalone/VST3/AU/LV2 builds share one compilation - see
+    // SettingsTab.cpp's own comment on JucePlugin_Build_Standalone), but the UI drawer that
+    // would ever start/arm/play it is only ever created in VirtualJVEditor when
+    // wrapperType == wrapperType_Standalone (same runtime-only gating already used for the
+    // Audio/MIDI Settings block) - so in VST3/AU/LV2 this member just sits there, permanently
+    // idle, never driven by anything.
+    //
+    // Each of the 8 tracks IS one of the 8 Performance Parts (kNumPerformanceParts above) in
+    // the sense that it drives that Part's channel/patch/level/pan - but its OWN sound/channel
+    // choice is stored independently of the Part's live state (Alan's request, 2026-09-09:
+    // "les sons assignés au mode performances devraient être décorrélés des sons assignés au
+    // séquenceur"), so changing a Part's patch from the Performance tab doesn't silently change
+    // what a song plays back, and vice versa. Assigned from PatchBrowser's "Send to Sequencer"
+    // submenu (setSequencerTrackPatch() below, NOT sendPatchToPerformancePart() directly - see
+    // that function's own call site in PatchBrowser.h), only actually pushed into the live
+    // Performance Part at the PLAY/REC edge - see handleAsyncUpdate() below. Deliberately no
+    // *numeric* Program Change UI (JivSequencerHost::supportsProgramChange() stays at its
+    // default false) - see JivSequencerHost.h's own top comment for why that's a real design
+    // choice, not a missing feature. Channel, unlike patch/volume/pan, is NOT decoupled -
+    // editing it from the sequencer (supportsTrackChannelEdit()) writes straight through to
+    // the Part's own live receivechannel, same as editing it from the Performance tab would
+    // (Alan's own call: "cela le répercutera dans le mode performance").
+    jivseq::JivSequencerEngine sequencerEngine;
+
+    jivseq::JivSequencerEngine &getSequencer() override { return sequencerEngine; }
+    void exportSequencerSongs(const juce::File &file) override;
+    void importSequencerSongs(const juce::File &file) override;
+    void midiPanic() override;
+    juce::File getLastDialogDir() const override { return lastSequencerDialogDir; }
+    void setLastDialogDir(const juce::File &dir) override { lastSequencerDialogDir = dir; }
+
+    bool supportsTrackChannelEdit() const override { return true; }
+    void setTrackChannel(int track, int channel) override;
+
+    bool supportsTrackVolumePan() const override { return true; }
+    bool supportsTrackVolumePanForTrack(int) const override { return true; } // Rhythm included - real LEVEL/PAN same as any Part
+    int getTrackVolume(int track) const override { return sequencerEngine.getTrackVolume(track); }
+    void setTrackVolume(int track, int volume) override { sequencerEngine.setTrackVolume(track, volume); }
+    int getTrackPan(int track) const override { return sequencerEngine.getTrackPan(track); }
+    void setTrackPan(int track, int pan) override { sequencerEngine.setTrackPan(track, pan); }
+    // "Now playing" hint for the CC Change dialog's placeholder - the Part's own live LEVEL/PAN,
+    // same reasoning as the D-110 host's own getTrackProgramHint() this was ported alongside.
+    int getTrackVolumeHint(int track) const override;
+    int getTrackPanHint(int track) const override;
+
+    // Called by PatchBrowser's "Send to Sequencer -> Part N" (Alan's request, 2026-09-09) -
+    // resolves patchInfoIndex into the same bank/number/expansionI/name identity
+    // PerformancePart itself uses (see sendPatchToPerformancePart()'s own comment) and stores
+    // it on the track, WITHOUT touching the live performanceParts[] - see this class's own
+    // sequencerEngine comment above.
+    void setSequencerTrackPatch(int track, int patchInfoIndex);
+    juce::String getTrackPatchName(int track) const override;
+
+    // AsyncUpdater: the PLAY/REC-edge patch/volume/pan push detected in processBlock()
+    // (audio thread) is deferred here (message thread) since applying a track's patch can mean
+    // injectCustomPatchIntoInternalMemory()'s multi-megabyte waverom_exp copy - not remotely
+    // safe to do on the audio thread. A few tens of milliseconds' latency between pressing
+    // PLAY and a changed instrument actually sounding is the accepted tradeoff (see
+    // processBlock()'s own comment).
+    void handleAsyncUpdate() override;
+
+    // Persisted enable/disable (Alan's request: "il faudra pouvoir le supprimer") - separate
+    // small file, same convention as displayModeSettingsFile()/romFolderSettingsFile() (NOT
+    // DataToSave - see that struct's own comment on why it can't grow). Disabling doesn't
+    // discard any recorded songs, only hides the drawer and stops the transport (see
+    // setSequencerEnabled()'s own .cpp comment) - re-enabling brings everything back exactly
+    // as it was.
+    bool sequencerEnabled = false;
+    bool getSequencerEnabled() const { return sequencerEnabled; }
+    void setSequencerEnabled(bool enabled);
+
+    // Where the sequencer's own 4 song slots survive an app restart - standalone-only state
+    // (see this whole block's own top comment), so unlike Performance sessions this has no DAW
+    // project to also round-trip through; a plain file is the only persistence that makes
+    // sense here. Reuses JivSequencerSongsFile's own .midiseq XML format (jivseq::
+    // exportSongsFile/importSongsFile) at a fixed path instead of a user-chosen one - see
+    // saveSequencerState()/loadSequencerState() in the .cpp for when these actually run.
+    static juce::File sequencerStateFile();
+    void saveSequencerState();
+    void loadSequencerState();
+
 private:
+    // See getLastDialogDir()/setLastDialogDir() above.
+    juce::File lastSequencerDialogDir;
+
+    // Edge-detects sequencerEngine.isPlaying() in processBlock() (audio thread) to trigger
+    // handleAsyncUpdate()'s patch/volume/pan push exactly once per PLAY/REC start, not every
+    // block while playing.
+    bool wasSequencerPlayingForPatchPush = false;
+
+    // Metronome click synthesis state (ported from the D-110 project's own processBlock() -
+    // see JivSequencerEngine::MetronomeClick), audible only when getMetronomeUseChannel10() is
+    // false (the alternative - real note on/off pairs on the rhythm channel - just flows
+    // through the normal MIDI path above, no extra state needed). Persists across blocks since
+    // a single click's ~30ms decay outlives one audio block.
+    std::vector<jivseq::JivSequencerEngine::MetronomeClick> sequencerClicks;
+    int metronomeSamplesRemaining = 0;
+    double metronomePhase = 0.0;
+    double metronomeFreq = 1000.0;
+
     // VirtualKeyboard support - see the VirtualKeyboardHost overrides above.
     juce::MidiMessageCollector keyboardCollector;
     std::array<std::atomic<bool>, 128> noteActiveTable{};

@@ -12,6 +12,7 @@
 
 #include "PluginProcessor.h"
 
+#include "sequencer/JivSequencerPanel.h"
 #include "ui/widgets/CollapseHandle.h"
 #include "ui/widgets/LCDisplay.h"
 #include "ui/widgets/TabBar.h"
@@ -54,6 +55,11 @@ public:
     // re-lays-out the top strip. See resized()'s own comment for the actual mode logic.
     void refreshDisplayMode();
 
+    // Called by VirtualJVProcessor::setSequencerEnabled() (Alan's request, 2026-09-09) whenever
+    // the Settings-tab sequencer toggle changes - creates/destroys the drawer (see
+    // sequencerPanel's own comment) and re-lays-out.
+    void refreshSequencerVisibility();
+
     void setSelectedTab(const int index) { tabs.setCurrentTabIndex(index); }
     void setSelectedROM(const int index) { patchBrowser.categoriesListBox.selectRow(index); }
     void setLCDColor(const LCDisplay::Color color) { lcd.setLCDColor(color); }
@@ -91,6 +97,16 @@ private:
     CollapseHandle keyboardHandle;
     VirtualKeyboard virtualKeyboard;
     bool keyboardCollapsed = false;
+
+    // A second collapsible drawer below the keyboard (Alan's request, 2026-09-09), Standalone
+    // build only - see JivSequencerPanel.h's own top comment. Lazily created/destroyed by
+    // refreshSequencerVisibility() rather than always existing hidden, same convention as
+    // SettingsTab's own audioDeviceSelector (std::unique_ptr<juce::Component>, standalone-only):
+    // nullptr in every VST3/AU/LV2 instance, and in a Standalone instance too until Alan turns
+    // the feature on in Settings.
+    CollapseHandle sequencerHandle;
+    std::unique_ptr<JivSequencerPanel> sequencerPanel;
+    bool sequencerCollapsed = false;
 
     juce::Viewport editCommonViewport, editTone1Viewport, editTone2Viewport, editTone3Viewport,
                    editTone4Viewport, editRhythmViewport, settingsViewport, interfaceViewport;

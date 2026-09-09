@@ -280,6 +280,30 @@ public:
                                (part.present ? " (" + juce::String(part.name) + ")" : " (Empty)");
           menu.addItem(s + 1, label);
         }
+
+        // "Send to Sequencer" submenu (Alan's request, 2026-09-09) - only offered once the
+        // sequencer is turned on in Settings. Deliberately calls setSequencerTrackPatch(), NOT
+        // sendPatchToPerformancePart() - a sequencer track's own patch is decoupled from
+        // PerformancePart's live state (see PluginProcessor.h's own comment on sequencerEngine),
+        // only pushed into the live Part at the PLAY/REC edge, so choosing a patch here never
+        // changes what's currently sounding in Performance mode nor what's stored under "Send
+        // to Performance Part N" above. Item ids offset by numParts so a single popup result
+        // can tell the two submenus apart.
+        if (safeParent->processor.getSequencerEnabled()) {
+          juce::PopupMenu seqMenu;
+          for (int s = 0; s < numParts; s++) {
+            const bool partIsRhythm = (s == numParts - 1);
+            if (partIsRhythm != isDrums)
+              continue;
+            const auto trackPatch = safeParent->processor.getSequencer().getTrackPatch(s);
+            juce::String label = "Part " + juce::String(s + 1) +
+                                 (partIsRhythm ? " (Rhythm)" : "") +
+                                 (trackPatch.index >= 0 ? " (" + trackPatch.name + ")" : " (Empty)");
+            seqMenu.addItem(numParts + s + 1, label);
+          }
+          menu.addSubMenu("Send to Sequencer", seqMenu);
+        }
+
         menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(),
                            [safeParent, index](int result) {
           if (safeParent == nullptr) {
@@ -287,6 +311,10 @@ public:
           }
           if (result >= 1 && result <= VirtualJVProcessor::kNumPerformanceParts)
             safeParent->processor.sendPatchToPerformancePart(index, result - 1);
+          else if (result > VirtualJVProcessor::kNumPerformanceParts
+                   && result <= 2 * VirtualJVProcessor::kNumPerformanceParts)
+            safeParent->processor.setSequencerTrackPatch(
+                index, result - 1 - VirtualJVProcessor::kNumPerformanceParts);
         });
       });
     }

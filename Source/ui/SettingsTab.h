@@ -44,10 +44,11 @@ private:
 
     enum SettingsWidgets
     {
-        MasterTune   = 10U,
-        Reverb       = 11U,
-        Chorus       = 12U,
-        MasterVolume = 13U,
+        MasterTune       = 10U,
+        Reverb           = 11U,
+        Chorus           = 12U,
+        MasterVolume     = 13U,
+        SequencerEnabled = 14U,
     };
 
     Slider masterTuneSlider{ MasterTune, 1, 127, 1, 64, true };
@@ -96,6 +97,12 @@ private:
     // DisplayMode/setDisplayMode() and PanelSkin.h for what each choice actually shows.
     juce::Label displaySectionHeaderLabel;
     juce::ComboBox displayModeCombo;
+
+    // Sequencer on/off (Alan's request, 2026-09-09) - Standalone build only, same runtime
+    // gating as audioDeviceSelector above; not even shown as a checkbox in VST3/AU/LV2, since
+    // it could never do anything there. See VirtualJVProcessor::setSequencerEnabled().
+    juce::Label sequencerSectionHeaderLabel;
+    Button sequencerToggle{ SequencerEnabled, "Enable Sequencer" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SettingsTab)
 };

@@ -94,6 +94,15 @@
       <FILE id="PSvqSL" name="PluginEditor.cpp" compile="1" resource="0"
             file="Source/PluginEditor.cpp"/>
       <FILE id="yg8Z9N" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
+      <GROUP id="{9C2A9B1E-3A1F-4E2B-8F1D-6C7E5A9D2B4F}" name="sequencer">
+        <FILE id="JsEng1" name="JivSequencerEngine.cpp" compile="1" resource="0" file="Source/sequencer/JivSequencerEngine.cpp"/>
+        <FILE id="JsEng2" name="JivSequencerEngine.h" compile="0" resource="0" file="Source/sequencer/JivSequencerEngine.h"/>
+        <FILE id="JsHost" name="JivSequencerHost.h" compile="0" resource="0" file="Source/sequencer/JivSequencerHost.h"/>
+        <FILE id="JsPan1" name="JivSequencerPanel.cpp" compile="1" resource="0" file="Source/sequencer/JivSequencerPanel.cpp"/>
+        <FILE id="JsPan2" name="JivSequencerPanel.h" compile="0" resource="0" file="Source/sequencer/JivSequencerPanel.h"/>
+        <FILE id="JsSf1" name="JivSequencerSongsFile.cpp" compile="1" resource="0" file="Source/sequencer/JivSequencerSongsFile.cpp"/>
+        <FILE id="JsSf2" name="JivSequencerSongsFile.h" compile="0" resource="0" file="Source/sequencer/JivSequencerSongsFile.h"/>
+      </GROUP>
     </GROUP>
   </MAINGROUP>
   <MODULES>
