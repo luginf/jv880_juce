@@ -278,6 +278,20 @@ private:
 			return;
 		}
 
+		// Matches the desktop Settings tab's own "Reload ROMs" button, which likewise disables
+		// itself once processor.loaded is true (see PluginProcessor.h's own comment on
+		// attemptLoadRoms() - switching ROM folders on an already-loaded engine isn't
+		// supported, only a fresh boot re-scans the folder). Files just copied here ARE
+		// already sitting in romBringUpDir() correctly named - see chooseRomFolder()'s own
+		// comment - they just won't actually load until the app restarts, so say that
+		// explicitly instead of silently doing nothing (Alan's report, 2026-09-09: picking
+		// expansion-board files after the app was already running from a prior ROM boot copied
+		// them fine but Browse still only showed the original factory banks).
+		if (processor.loaded) {
+			updateStatus(juce::String(copied) + " file(s) copied - close and reopen the app to load them");
+			return;
+		}
+
 		retryRoms();
 	}
 
