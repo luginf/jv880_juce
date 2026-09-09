@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<JUCERPROJECT id="DSwmeO" name="virtual_jv" projectType="audioplug" useAppConfig="0"
-              version="1.1.0" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
-              pluginManufacturerCode="GlZs" pluginCode="VRJV" cppLanguageStandard="17"
-              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="Virtual JV-880"
-              pluginDesc="Virtual JV-880" companyName="Giulio Zausa" lv2Uri="https://www.GiulioZausa.com/plugins/virtual_jv">
-  <MAINGROUP id="U4zWTk" name="virtual_jv">
+<JUCERPROJECT id="DSwmeO" name="virtual_jiv881" projectType="audioplug" useAppConfig="0"
+              version="1.1.1" addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn"
+              pluginManufacturerCode="Lgnf" pluginCode="JI81" cppLanguageStandard="17"
+              pluginFormats="buildAU,buildLV2,buildStandalone,buildVST3" pluginName="Virtual JiV-881"
+              pluginDesc="Virtual JiV-881" companyName="luginf" companyWebsite="https://github.com/luginf/virtual-jiv-881"
+              bundleIdentifier="com.luginf.virtual_jiv881" lv2Uri="https://github.com/luginf/virtual-jiv-881/plugins/virtual_jiv881">
+  <MAINGROUP id="U4zWTk" name="virtual_jiv881">
     <GROUP id="{BA05F489-649E-6AE4-7F62-10742B1AC120}" name="Assets">
-      <FILE id="DiWlj3" name="VirtualJV Logo.svg" compile="0" resource="1"
-            file="Assets/VirtualJV Logo.svg"/>
-      <FILE id="Jv880PnC" name="jv880_panel_compact.png" compile="0" resource="1"
-            file="Source/Resources/jv880_panel_compact.png"/>
-      <FILE id="Jv880PnF" name="jv880.png" compile="0" resource="1"
-            file="Source/Resources/jv880.png"/>
-      <FILE id="Jv880PnX" name="jv880_commands.png" compile="0" resource="1"
-            file="Source/Resources/jv880_commands.png"/>
+      <FILE id="DiWlj3" name="VirtualJiV Logo.svg" compile="0" resource="1"
+            file="Assets/VirtualJiV Logo.svg"/>
+      <FILE id="Jv880PnC" name="jiv881_panel_compact.png" compile="0" resource="1"
+            file="Source/Resources/jiv881_panel_compact.png"/>
+      <FILE id="Jv880PnF" name="jiv881.png" compile="0" resource="1"
+            file="Source/Resources/jiv881.png"/>
+      <FILE id="Jv880PnX" name="jiv881_commands.png" compile="0" resource="1"
+            file="Source/Resources/jiv881_commands.png"/>
     </GROUP>
     <GROUP id="{A9A4FE8C-A726-5731-A9C6-45A227C17A55}" name="Source">
       <FILE id="V15HPu" name="rom.cpp" compile="1" resource="0" file="Source/rom.cpp"/>
@@ -114,8 +115,8 @@
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" bigIcon="DiWlj3" smallIcon="DiWlj3">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="jv880"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="jv880"/>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="jiv881"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="jiv881"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_core" path="./JUCE/modules"/>
@@ -135,8 +136,8 @@
     </XCODE_MAC>
     <XCODE_IPHONE targetFolder="Builds/iOS" bigIcon="DiWlj3" smallIcon="DiWlj3">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="jv880"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="jv880"/>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="jiv881"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="jiv881"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_animation" path="./JUCE/modules"/>
@@ -156,8 +157,8 @@
     </XCODE_IPHONE>
     <LINUX_MAKE targetFolder="Builds/LinuxMakefile" smallIcon="DiWlj3" bigIcon="DiWlj3">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="jv880"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="jv880" linkTimeOptimisation="1"/>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="jiv881"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="jiv881" linkTimeOptimisation="1"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_animation" path="./JUCE/modules"/>
@@ -177,9 +178,9 @@
     </LINUX_MAKE>
     <VS2022 targetFolder="Builds/VisualStudio2022" smallIcon="DiWlj3" bigIcon="DiWlj3">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="jv880" headerPath="C:\Program Files (x86)\Steinberg\ASIOSDK\common\"
+        <CONFIGURATION isDebug="1" name="Debug" targetName="jiv881" headerPath="C:\Program Files (x86)\Steinberg\ASIOSDK\common\"
                        winArchitecture="x64"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="jv880" headerPath="C:\Program Files (x86)\Steinberg\ASIOSDK\common\"
+        <CONFIGURATION isDebug="0" name="Release" targetName="jiv881" headerPath="C:\Program Files (x86)\Steinberg\ASIOSDK\common\"
                        winArchitecture="x64"/>
       </CONFIGURATIONS>
       <MODULEPATHS>

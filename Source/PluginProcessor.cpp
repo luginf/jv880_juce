@@ -23,10 +23,23 @@ namespace {
 // a pure attenuator, so if this still isn't enough Alan can say so and it can be raised further.
 constexpr float kOutputMakeupGain = 1.5f;
 
+// Base app-data directory for everything this build stores here (settings, saved patches,
+// performances - ROMs are resolved separately in rom.cpp with the same logic, keep both in sync).
+// Prefers the new "JiV881" name (2026-09-09 rebrand, see CLAUDE.md) but falls back to the
+// pre-rebrand "JV880" folder if that's the only one that already exists on disk - existing
+// installs keep working untouched, no migration step needed. A fresh install (neither exists yet)
+// gets the new name.
+juce::File appDataBaseDir() {
+  auto base = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
+  auto newDir = base.getChildFile("JiV881");
+  auto oldDir = base.getChildFile("JV880");
+  if (!newDir.isDirectory() && oldDir.isDirectory())
+    return oldDir;
+  return newDir;
+}
+
 juce::File keyboardSettingsFile() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
-      .getChildFile("keyboard_settings.xml");
+  return appDataBaseDir().getChildFile("keyboard_settings.xml");
 }
 
 void loadPersistedKeyboardSettings(bool &pcInput, int &pcLayout) {
@@ -55,9 +68,7 @@ void savePersistedKeyboardSettings(bool pcInput, int pcLayout) {
 // itself points to (same reasoning as keyboardSettingsFile()), so it's always findable even if
 // the folder it names has since moved, been deleted, or was never valid to begin with.
 juce::File romFolderSettingsFile() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
-      .getChildFile("rom_folder.txt");
+  return appDataBaseDir().getChildFile("rom_folder.txt");
 }
 
 juce::File loadPersistedRomFolderOverride() {
@@ -82,9 +93,7 @@ void savePersistedRomFolderOverride(const juce::File &dir) {
 // content reasoning as romFolderSettingsFile() above (not that this one's content ever names a
 // path, but consistency).
 juce::File displayModeSettingsFile() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
-      .getChildFile("display_mode.txt");
+  return appDataBaseDir().getChildFile("display_mode.txt");
 }
 
 VirtualJVProcessor::DisplayMode loadPersistedDisplayMode() {
@@ -1225,8 +1234,7 @@ bool VirtualJVProcessor::isPatchModified(int index) const {
 }
 
 juce::File VirtualJVProcessor::userPatchesDir() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
+  return appDataBaseDir()
       .getChildFile("UserPatches");
 }
 
@@ -1686,8 +1694,7 @@ void VirtualJVProcessor::setPerformanceModeEnabled(bool enabled) {
 }
 
 juce::File VirtualJVProcessor::performancesDir() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
+  return appDataBaseDir()
       .getChildFile("Performances");
 }
 
@@ -1750,8 +1757,7 @@ void VirtualJVProcessor::loadPerformance(int bankIndex) {
 }
 
 juce::File VirtualJVProcessor::performanceSessionFile() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-      .getChildFile("JV880")
+  return appDataBaseDir()
       .getChildFile("performance_session.dat");
 }
 

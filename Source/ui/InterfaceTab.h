@@ -12,7 +12,7 @@
     to reach any firmware screen that has no NVRAM-shortcut equivalent.
 
     v3 (2026-09-08, Alan's request): now just a thin host for PanelSkin (see PanelSkin.h)
-    configured with the buttons-only "commands" crop (jv880_commands.png - DATA dial + all 12
+    configured with the buttons-only "commands" crop (jiv881_commands.png - DATA dial + all 12
     discrete buttons, no LCD/Volume) - this tab's whole photo-based skin (v2, same day) moved into
     PanelSkin once the top-of-window Panel Compact/Full display modes needed the identical hit-
     region logic against a different crop of the same artwork. This tab exists specifically for

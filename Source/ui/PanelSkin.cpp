@@ -11,14 +11,14 @@
 
 //==============================================================================
 const PanelSkin::Variant PanelSkin::Variant::kFull{
-    BinaryData::jv880_png, BinaryData::jv880_pngSize, 0.0f, 3280.0f, true};
+    BinaryData::jiv881_png, BinaryData::jiv881_pngSize, 0.0f, 3280.0f, true};
 const PanelSkin::Variant PanelSkin::Variant::kCompact{
-    BinaryData::jv880_panel_compact_png, BinaryData::jv880_panel_compact_pngSize, 382.0f, 2012.0f, true};
+    BinaryData::jiv881_panel_compact_png, BinaryData::jiv881_panel_compact_pngSize, 382.0f, 2012.0f, true};
 const PanelSkin::Variant PanelSkin::Variant::kCommands{
-    BinaryData::jv880_commands_png, BinaryData::jv880_commands_pngSize, 1435.0f, 948.0f, false};
+    BinaryData::jiv881_commands_png, BinaryData::jiv881_commands_pngSize, 1435.0f, 948.0f, false};
 
 // Reference-space (shared 3280x304 space - see PanelSkin.h's own header comment) bounding boxes,
-// measured off jv880.png by connected-component analysis, not eyeballed - same technique/values
+// measured off jiv881.png by connected-component analysis, not eyeballed - same technique/values
 // as the original compact-only InterfaceTab skin (cross-checked: those were full-space X minus
 // 382, and they matched exactly).
 const PanelSkin::PanelButton PanelSkin::kButtons[PanelSkin::kNumButtons] = {

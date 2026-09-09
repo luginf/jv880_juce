@@ -10,11 +10,11 @@
     and the Interface tab (an ultra-compact buttons-only crop, for anyone who keeps "LCD only" up
     top and still wants clickable panel buttons somewhere).
 
-    All three photos this class can be pointed at - jv880.png (full, 3280x304), jv880_panel_
-    compact.png (2012x304) and jv880_commands.png (buttons/dial only, no LCD/Volume, 948x304) -
+    All three photos this class can be pointed at - jiv881.png (full, 3280x304), jiv881_panel_
+    compact.png (2012x304) and jiv881_commands.png (buttons/dial only, no LCD/Volume, 948x304) -
     turned out to be EXACT pixel crops of the same underlying artwork (confirmed by a direct
-    numpy diff, not assumed): jv880_panel_compact.png == jv880.png's columns [382, 2394), and
-    jv880_commands.png == jv880.png's columns [1435, 2383). So there is exactly ONE measured
+    numpy diff, not assumed): jiv881_panel_compact.png == jiv881.png's columns [382, 2394), and
+    jiv881_commands.png == jiv881.png's columns [1435, 2383). So there is exactly ONE measured
     coordinate table (kButtons, the dial/volume circle centres, the LCD glass rect - all below, in
     "full" reference space, kMasterRefW x kMasterRefH = 3280x304, found by the same connected-
     component analysis used for the original compact-only skin, not eyeballed) and each Variant

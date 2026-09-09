@@ -43,10 +43,24 @@ RomInfo romInfos[romCount] = {
 namespace {
 std::string g_romsDirOverride;
 
+// Default (no override set) ROMs folder. Prefers the new "JiV881" app-data folder name
+// (2026-09-09 rebrand, see CLAUDE.md) but falls back to the pre-rebrand "JV880" folder if that's
+// the only one that already exists on disk, so existing installs' already-copied ROM dumps are
+// still found without any migration step. Same logic as PluginProcessor.cpp's own
+// appDataBaseDir() (kept separately since rom.h/rom.cpp deliberately stay free of a JUCE
+// dependency in the header - only this .cpp needs juce::File) - keep both in sync.
+juce::File resolveRomsBaseDir() {
+  auto base = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
+  auto newDir = base.getChildFile("JiV881");
+  auto oldDir = base.getChildFile("JV880");
+  if (!newDir.isDirectory() && oldDir.isDirectory())
+    return oldDir;
+  return newDir;
+}
+
 juce::File resolveRomsDirectory() {
   if (g_romsDirOverride.empty())
-    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-        .getChildFile("JV880");
+    return resolveRomsBaseDir();
   return juce::File(g_romsDirOverride);
 }
 } // namespace

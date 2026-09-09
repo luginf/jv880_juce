@@ -10,22 +10,22 @@ prep() {
 }
 
 # Variables
-REPO_URL="https://github.com/luginf/virtual-jv-880/releases/download/latest"
-TMP_DIR="/tmp/jv880_install"
+REPO_URL="https://github.com/luginf/virtual-jiv-881/releases/download/latest"
+TMP_DIR="/tmp/jiv881_install"
 mkdir -p "$TMP_DIR"
 
 # ZIP files to download
 FILES=(
-    "jv880.component.macOS.zip"
-    "jv880.vst3.macOS.zip"
-    "jv880.app.macOS.zip"
+    "jiv881.component.macOS.zip"
+    "jiv881.vst3.macOS.zip"
+    "jiv881.app.macOS.zip"
 )
 
 # Extracted file names (all lowercase)
 EXTRACTED_FILES=(
-    "jv880.component"
-    "jv880.vst3"
-    "jv880.app"
+    "jiv881.component"
+    "jiv881.vst3"
+    "jiv881.app"
 )
 
 # Corresponding installation destinations

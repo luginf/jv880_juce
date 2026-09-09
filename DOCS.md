@@ -1,4 +1,4 @@
-# Virtual JV-880 - Documentation
+# Virtual JiV-881 - Documentation
 
 This is a cycle-accurate emulation of the Roland JV-880's actual CPU running its original
 firmware (based on [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)) - not a re-implementation
