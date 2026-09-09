@@ -159,9 +159,17 @@ VirtualJVProcessor::VirtualJVProcessor()
   // this was ported from, there's no firmware RAM to poll per-block - performanceParts[] is
   // already plain processor state, read directly. Set once here (the lambda itself never
   // changes) rather than refreshed per-block, since it captures `this` and always reads the
-  // live array.
+  // live array. Prefers the track's own stored channel override (see Track::channelOverride's
+  // own comment - decoupled-until-PLAY, same as patch/volume/pan) so the CH readout already
+  // shows what will actually apply at the next PLAY/REC edge; falls back to the Part's current
+  // live channel while no override is set.
   sequencerEngine.setChannelSource([this](int track) {
-    return (track >= 0 && track < kNumPerformanceParts) ? performanceParts[track].midiChannel : 1;
+    if (track < 0 || track >= kNumPerformanceParts)
+      return 1;
+    const int override_ = sequencerEngine.getTrackChannelOverride(track);
+    if (override_ >= 1 && override_ <= 16)
+      return override_;
+    return performanceParts[track].midiChannel;
   });
 
   if (wrapperType == juce::AudioProcessor::wrapperType_Standalone)
@@ -1051,6 +1059,35 @@ bool VirtualJVProcessor::attemptLoadRoms() {
     std::exit(0);
   }
 
+  // Alan's report, 2026-09-09: "Send to Sequencer: 1" from Browse doesn't stick, the track
+  // stays "(Empty)". Isolates the storage plumbing (setSequencerTrackPatch()/
+  // getTrackPatch()) from the GUI menu-click routing, to tell whether the bug is in the data
+  // layer or purely in PatchBrowser's popup-menu handling.
+  if (std::getenv("JV880_SELFTEST_SEQPATCH")) {
+    std::fprintf(stderr, "[selftest-seqpatch] patchInfoPerGroup[0].size()=%zu\n",
+                 patchInfoPerGroup.empty() ? (size_t)0 : patchInfoPerGroup[0].size());
+    if (!patchInfoPerGroup.empty() && !patchInfoPerGroup[0].empty()) {
+      const int firstIndex = patchInfoPerGroup[0][0]->iInList;
+      std::fprintf(stderr, "[selftest-seqpatch] first patch iInList=%d present=%d drums=%d name=%.*s\n",
+                   firstIndex, (int)patchInfos[firstIndex].present, (int)patchInfos[firstIndex].drums,
+                   patchInfos[firstIndex].nameLength, patchInfos[firstIndex].name);
+
+      const auto before = sequencerEngine.getTrackPatch(0);
+      std::fprintf(stderr, "[selftest-seqpatch] before: index=%d name=%s\n", before.index,
+                   before.name.toRawUTF8());
+
+      setSequencerTrackPatch(0, firstIndex);
+
+      const auto after = sequencerEngine.getTrackPatch(0);
+      std::fprintf(stderr, "[selftest-seqpatch] after: index=%d name=%s expansionI=%d isRhythm=%d\n",
+                   after.index, after.name.toRawUTF8(), (int)after.expansionI, (int)after.isRhythm);
+    } else {
+      std::fprintf(stderr, "[selftest-seqpatch] no patches in group 0, can't test\n");
+    }
+    std::fprintf(stderr, "[selftest-seqpatch] done, exiting\n");
+    std::exit(0);
+  }
+
   return true;
 }
 
@@ -1198,16 +1235,6 @@ void VirtualJVProcessor::midiPanic() {
   mcuLock.exit();
 }
 
-// Channel is NOT decoupled the way patch/volume/pan are - see sequencerEngine's own comment
-// in PluginProcessor.h. Writes straight into the live Part, same as the Performance tab's own
-// channel control would (setPerformancePartParams()), so both stay in sync automatically.
-void VirtualJVProcessor::setTrackChannel(int track, int channel) {
-  if (track < 0 || track >= kNumPerformanceParts)
-    return;
-  auto &part = performanceParts[track];
-  setPerformancePartParams(track, channel, part.level, part.pan, part.enabled);
-}
-
 int VirtualJVProcessor::getTrackVolumeHint(int track) const {
   if (track < 0 || track >= kNumPerformanceParts)
     return -1;
@@ -1263,11 +1290,13 @@ void VirtualJVProcessor::handleAsyncUpdate() {
     if (patch.index >= 0)
       sendPatchToPerformancePart(patch.index, t);
 
+    const int channel = sequencerEngine.getTrackChannelOverride(t);
     const int volume = sequencerEngine.getTrackVolume(t);
     const int pan = sequencerEngine.getTrackPan(t);
-    if (volume >= 0 || pan >= 0) {
+    if (channel >= 0 || volume >= 0 || pan >= 0) {
       auto &part = performanceParts[t];
-      setPerformancePartParams(t, part.midiChannel, volume >= 0 ? volume : part.level,
+      setPerformancePartParams(t, channel >= 0 ? channel : part.midiChannel,
+                                volume >= 0 ? volume : part.level,
                                 pan >= 0 ? pan : part.pan, part.enabled);
     }
   }
@@ -1385,6 +1414,16 @@ void VirtualJVProcessor::setCurrentProgram(int index) {
   currentPatchIndex = index;
 
   mcuLock.exit();
+
+  // Every branch above just wrote nvram[0x11] to Patch mode (0/1 depending on isDrums, never
+  // Performance) - loading a Patch from Browse always leaves the firmware in Patch mode, same
+  // as pressing the real PATCH/PERFORM button would. Resync the app-level flag/checkbox the
+  // same way PanelSkin::pressButton() already does for that physical button (Alan's report,
+  // 2026-09-09: Browse's own patch clicks caused the exact same class of desync that fix never
+  // covered, since it only intercepted the button, not this call). setPerformanceModeEnabled()
+  // takes mcuLock itself, so this has to run after the mcuLock.exit() above, not before.
+  if (performanceModeEnabled)
+    setPerformanceModeEnabled(false);
 
   if (auto editor = getActiveEditor())
   {

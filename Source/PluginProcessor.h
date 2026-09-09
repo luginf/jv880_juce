@@ -334,8 +334,14 @@ public:
     juce::File getLastDialogDir() const override { return lastSequencerDialogDir; }
     void setLastDialogDir(const juce::File &dir) override { lastSequencerDialogDir = dir; }
 
+    // Stored on the track, same decoupled-until-PLAY treatment as patch/volume/pan below - NOT
+    // written straight into the live PerformancePart (Alan's explicit correction, 2026-09-09:
+    // "je veux que lors du PLAY du seq, cela assigne le canal 5 sur la Part 3", not
+    // immediately). See handleAsyncUpdate() for the actual push, and the constructor's channel
+    // source lambda for why the CH readout already shows this override once set (falls back to
+    // the Part's own live channel only while unset).
     bool supportsTrackChannelEdit() const override { return true; }
-    void setTrackChannel(int track, int channel) override;
+    void setTrackChannel(int track, int channel) override { sequencerEngine.setTrackChannelOverride(track, channel); }
 
     bool supportsTrackVolumePan() const override { return true; }
     bool supportsTrackVolumePanForTrack(int) const override { return true; } // Rhythm included - real LEVEL/PAN same as any Part

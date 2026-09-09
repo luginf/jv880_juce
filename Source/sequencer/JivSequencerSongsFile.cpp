@@ -57,6 +57,7 @@ void writeSongsXml(const JivSequencerEngine &engine, juce::XmlElement &xml, int 
 			xml.setAttribute("seqPatchName" + suffix, patch.name);
 			xml.setAttribute("seqPatchExpansionI" + suffix, (int)patch.expansionI);
 			xml.setAttribute("seqPatchIsRhythm" + suffix, patch.isRhythm ? 1 : 0);
+			xml.setAttribute("seqChannelOverride" + suffix, engine.slotTrackChannelOverride(slot, t));
 		}
 	}
 }
@@ -92,6 +93,8 @@ void readSongsXml(JivSequencerEngine &engine, const juce::XmlElement &xml, int n
 			patch.expansionI = (uint8_t)xml.getIntAttribute("seqPatchExpansionI" + suffix, 0xff);
 			patch.isRhythm = xml.getIntAttribute("seqPatchIsRhythm" + suffix, 0) != 0;
 			engine.setSlotTrackPatch(slot, t, patch);
+			engine.setSlotTrackChannelOverride(
+				slot, t, xml.getIntAttribute("seqChannelOverride" + suffix, -1));
 		}
 	}
 }

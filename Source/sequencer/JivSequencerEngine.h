@@ -423,6 +423,11 @@ public:
 	void setTrackPatch(int index, const TrackPatch &patch);
 	void clearTrackPatch(int index) { setTrackPatch(index, TrackPatch{}); }
 
+	// JV-880-specific addition (2026-09-09) - see Track::channelOverride's own comment. -1 = no
+	// override. 1-16 when set.
+	int getTrackChannelOverride(int index) const;
+	void setTrackChannelOverride(int index, int channel);
+
 	// Undo for the editing operations below (quantizeTrack, clearTrack, deleteBars, copyBars,
 	// transposeBars, newSong, copyCurrentSongTo) - none of them checkpoints on its own; the
 	// caller (the UI) calls pushUndoSnapshot() right before applying one, exactly where it
@@ -591,6 +596,8 @@ public:
 	void setSlotTrackPan(int slot, int track, int pan);
 	TrackPatch slotTrackPatch(int slot, int track) const;
 	void setSlotTrackPatch(int slot, int track, const TrackPatch &patch);
+	int slotTrackChannelOverride(int slot, int track) const;
+	void setSlotTrackChannelOverride(int slot, int track, int channel);
 
 	struct MetronomeClick {
 		int samplePosition;
@@ -644,6 +651,13 @@ private:
 		// live Performance engine, only at the moment playback actually starts.
 		int patchIndex = -1;
 		juce::String patchName;
+		// JV-880-specific addition (2026-09-09, Alan's explicit correction: "je veux que lors du
+		// PLAY du seq, cela assigne le canal 5 sur la Part 3", not immediately on edit) - same
+		// decoupled-until-PLAY treatment as patchIndex above, NOT the live/shared write an
+		// earlier version of this used to do straight into PerformancePart. -1 = no override
+		// (channelForTrack() then falls back to the Part's own current live receivechannel -
+		// see VirtualJVProcessor's channel source lambda).
+		int channelOverride = -1;
 		uint8_t patchExpansionI = 0xff;
 		bool patchIsRhythm = false;
 		// Runtime-only playback state, not serialized (trackToBytes() only round-trips `events`):

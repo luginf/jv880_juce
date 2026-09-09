@@ -433,6 +433,10 @@ void JivSequencerEngine::setTrackPatch(int index, const TrackPatch &patch) {
 	t.patchExpansionI = patch.expansionI;
 	t.patchIsRhythm = patch.isRhythm;
 }
+int JivSequencerEngine::getTrackChannelOverride(int index) const { return trackAt(index).channelOverride; }
+void JivSequencerEngine::setTrackChannelOverride(int index, int channel) {
+	trackAt(index).channelOverride = (channel < 1 || channel > 16) ? -1 : channel;
+}
 void JivSequencerEngine::setTrackSoloed(int index, bool soloed) { trackAt(index).soloed = soloed; }
 bool JivSequencerEngine::isTrackSoloed(int index) const { return trackAt(index).soloed; }
 bool JivSequencerEngine::trackHasEvents(int index) const { return trackAt(index).events.getNumEvents() > 0; }
@@ -834,6 +838,12 @@ void JivSequencerEngine::setSlotTrackPatch(int slot, int track, const TrackPatch
 	t.patchName = patch.name;
 	t.patchExpansionI = patch.expansionI;
 	t.patchIsRhythm = patch.isRhythm;
+}
+int JivSequencerEngine::slotTrackChannelOverride(int slot, int track) const {
+	return songTrackAt(slot, track).channelOverride;
+}
+void JivSequencerEngine::setSlotTrackChannelOverride(int slot, int track, int channel) {
+	songTrackAt(slot, track).channelOverride = (channel < 1 || channel > 16) ? -1 : channel;
 }
 
 void JivSequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamples, double sampleRate,
