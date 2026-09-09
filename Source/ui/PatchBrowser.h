@@ -313,8 +313,13 @@ public:
             safeParent->processor.sendPatchToPerformancePart(index, result - 1);
           else if (result > VirtualJVProcessor::kNumPerformanceParts
                    && result <= 2 * VirtualJVProcessor::kNumPerformanceParts)
+            // setSequencerTrackPatch() takes (track, patchInfoIndex) - the OPPOSITE order from
+            // sendPatchToPerformancePart() just above (patchInfoIndex, partIndex). Mixing the two
+            // up here (index, track) is exactly why every "Send to Sequencer" click used to fail
+            // silently: the clicked patch's own index (often >7) landed in the `track` parameter
+            // and got rejected by its range guard - see setSequencerTrackPatch()'s own comment.
             safeParent->processor.setSequencerTrackPatch(
-                index, result - 1 - VirtualJVProcessor::kNumPerformanceParts);
+                result - 1 - VirtualJVProcessor::kNumPerformanceParts, index);
         });
       });
     }

@@ -362,6 +362,22 @@ public:
     void setSequencerTrackPatch(int track, int patchInfoIndex);
     juce::String getTrackPatchName(int track) const override;
 
+    // The SYNC button (top-right of the sequencer drawer, Alan's request, 2026-09-10: "comme on
+    // a fait sur le D110") - JivSequencerPanel.cpp's own showResyncInfo()/confirmCaptureLivePatch()
+    // already implement the UI for both directions, ported unmodified and simply never reachable
+    // until now (supportsCaptureLivePatch() stayed at its false default). "Program Change" in
+    // that ported UI text means "a track's assigned patch" here, same substitution
+    // supportsProgramChange()'s own comment above already explains - see resyncProgramChanges()/
+    // captureLivePatchIntoTracks() in the .cpp for what each direction actually moves.
+    bool supportsCaptureLivePatch() const override { return true; }
+    void captureLivePatchIntoTracks() override;
+    void resyncProgramChanges() override;
+
+    void ensurePerformanceMode() override {
+      if (!performanceModeEnabled)
+        setPerformanceModeEnabled(true);
+    }
+
     // AsyncUpdater: the PLAY/REC-edge patch/volume/pan push detected in processBlock()
     // (audio thread) is deferred here (message thread) since applying a track's patch can mean
     // injectCustomPatchIntoInternalMemory()'s multi-megabyte waverom_exp copy - not remotely
@@ -389,6 +405,16 @@ public:
     static juce::File sequencerStateFile();
     void saveSequencerState();
     void loadSequencerState();
+
+    // Shared by loadSequencerState()'s own stale-index re-resolution and
+    // captureLivePatchIntoTracks() below - a patch's real identity is its name/expansionI/isRhythm
+    // triple (patchInfos[] index isn't stable across ROM/expansion set changes), so both need the
+    // same "find the current index for this identity" lookup.
+    int findPatchInfoIndexByIdentity(const juce::String &name, uint8_t expansionI, bool isRhythm) const;
+    // Shared by handleAsyncUpdate()'s PLAY/REC-edge loop and resyncProgramChanges()'s manual
+    // "Send" action - pushes one track's stored patch/channel/volume/pan into its live
+    // PerformancePart right now. Message-thread only (see handleAsyncUpdate()'s own comment).
+    void pushSequencerTrackToPerformance(int track);
 
 private:
     // See getLastDialogDir()/setLastDialogDir() above.

@@ -1174,19 +1174,21 @@ void VirtualJVProcessor::loadSequencerState() {
     if (stillValid)
       continue;
 
-    int foundIndex = -1;
-    for (int i = 0; i < romPatchCapacity + userPatchCapacity; ++i) {
-      auto &info = patchInfos[i];
-      if (!info.present || info.drums != patch.isRhythm || (int)info.expansionI != patch.expansionI)
-        continue;
-      if (juce::String(info.name, (size_t)info.nameLength) == patch.name) {
-        foundIndex = i;
-        break;
-      }
-    }
-    patch.index = foundIndex;
+    patch.index = findPatchInfoIndexByIdentity(patch.name, patch.expansionI, patch.isRhythm);
     sequencerEngine.setTrackPatch(t, patch);
   }
+}
+
+int VirtualJVProcessor::findPatchInfoIndexByIdentity(const juce::String &name, uint8_t expansionI,
+                                                       bool isRhythm) const {
+  for (int i = 0; i < romPatchCapacity + userPatchCapacity; ++i) {
+    auto &info = patchInfos[i];
+    if (!info.present || info.drums != isRhythm || (int)info.expansionI != expansionI)
+      continue;
+    if (juce::String(info.name, (size_t)info.nameLength) == name)
+      return i;
+  }
+  return -1;
 }
 
 // Doesn't discard any recorded songs either way - disabling only hides the drawer/stops the
@@ -1285,20 +1287,60 @@ juce::String VirtualJVProcessor::getTrackPatchName(int track) const {
 // an expansion patch, and the mixed-expansion AlertWindow) and to call setPerformancePartParams()
 // for volume/pan.
 void VirtualJVProcessor::handleAsyncUpdate() {
-  for (int t = 0; t < kNumPerformanceParts; ++t) {
-    const auto patch = sequencerEngine.getTrackPatch(t);
-    if (patch.index >= 0)
-      sendPatchToPerformancePart(patch.index, t);
+  for (int t = 0; t < kNumPerformanceParts; ++t)
+    pushSequencerTrackToPerformance(t);
+}
 
-    const int channel = sequencerEngine.getTrackChannelOverride(t);
-    const int volume = sequencerEngine.getTrackVolume(t);
-    const int pan = sequencerEngine.getTrackPan(t);
-    if (channel >= 0 || volume >= 0 || pan >= 0) {
-      auto &part = performanceParts[t];
-      setPerformancePartParams(t, channel >= 0 ? channel : part.midiChannel,
-                                volume >= 0 ? volume : part.level,
-                                pan >= 0 ? pan : part.pan, part.enabled);
+void VirtualJVProcessor::pushSequencerTrackToPerformance(int t) {
+  const auto patch = sequencerEngine.getTrackPatch(t);
+  if (patch.index >= 0)
+    sendPatchToPerformancePart(patch.index, t);
+
+  const int channel = sequencerEngine.getTrackChannelOverride(t);
+  const int volume = sequencerEngine.getTrackVolume(t);
+  const int pan = sequencerEngine.getTrackPan(t);
+  if (channel >= 0 || volume >= 0 || pan >= 0) {
+    auto &part = performanceParts[t];
+    setPerformancePartParams(t, channel >= 0 ? channel : part.midiChannel,
+                              volume >= 0 ? volume : part.level,
+                              pan >= 0 ? pan : part.pan, part.enabled);
+  }
+}
+
+// SYNC -> "Send stored settings to patch now" (JivSequencerPanel.cpp's ported UI, see this
+// method's own declaration comment in PluginProcessor.h). Same push handleAsyncUpdate() already
+// does at the PLAY/REC edge, just on demand and immediately - already on the message thread here
+// (a UI click), so no need to defer through triggerAsyncUpdate() first.
+void VirtualJVProcessor::resyncProgramChanges() {
+  ensurePerformanceMode();
+  for (int t = 0; t < kNumPerformanceParts; ++t)
+    pushSequencerTrackToPerformance(t);
+}
+
+// SYNC -> "Capture patch into song..." - the reverse pull: overwrites every track's stored
+// patch/channel/volume/pan with whatever its PerformancePart actually has live right now. A
+// Part with nothing assigned (present == false) clears the matching track the same way, so the
+// two stay a true mirror of each other rather than a one-directional merge.
+void VirtualJVProcessor::captureLivePatchIntoTracks() {
+  for (int t = 0; t < kNumPerformanceParts; ++t) {
+    auto &part = performanceParts[t];
+    if (!part.present) {
+      sequencerEngine.clearTrackPatch(t);
+      sequencerEngine.setTrackChannelOverride(t, -1);
+      sequencerEngine.setTrackVolume(t, -1);
+      sequencerEngine.setTrackPan(t, -1);
+      continue;
     }
+
+    jivseq::JivSequencerEngine::TrackPatch patch;
+    patch.name = juce::String(part.name);
+    patch.expansionI = part.expansionI;
+    patch.isRhythm = part.isRhythm;
+    patch.index = findPatchInfoIndexByIdentity(patch.name, patch.expansionI, patch.isRhythm);
+    sequencerEngine.setTrackPatch(t, patch);
+    sequencerEngine.setTrackChannelOverride(t, part.midiChannel);
+    sequencerEngine.setTrackVolume(t, part.level);
+    sequencerEngine.setTrackPan(t, part.pan);
   }
 }
 
@@ -2091,6 +2133,26 @@ void VirtualJVProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
   // The on-screen VirtualKeyboard's notes, queued by injectTestNote() - merged in exactly the
   // same way a real MIDI IN port's messages would be.
   keyboardCollector.removeNextBlockOfMessages(midiMessages, buffer.getNumSamples());
+
+  // MIDI Remap (Alan's report, 2026-09-10): previously only VirtualKeyboard.cpp's own on-screen
+  // clicks honoured this - a real external MIDI controller's own channel went straight through
+  // untouched, so choosing "channel 2" here never actually routed a real keyboard playing on
+  // channel 1 anywhere but channel 1. Stamping every incoming message (real MIDI IN and
+  // on-screen alike - re-stamping the latter is a harmless no-op, it's already on this channel)
+  // here, before anything downstream reads a channel off it, covers both: normal
+  // channel-per-Performance-Part routing below, AND the sequencer's own armed-track channel
+  // filter just below that (so what you record matches whichever track you actually meant).
+  if (keyboardMidiRemap)
+  {
+    juce::MidiBuffer remapped;
+    for (const auto metadata : midiMessages)
+    {
+      auto message = metadata.getMessage();
+      message.setChannel(keyboardMidiChannel);
+      remapped.addEvent(message, metadata.samplePosition);
+    }
+    midiMessages.swapWith(remapped);
+  }
 
   mcuLock.enter();
 

@@ -462,7 +462,11 @@ void JivSequencerPanel::showUndoRedoInfo(bool isUndo) {
 }
 
 void JivSequencerPanel::showResyncInfo() {
-	const juce::String fields = "Program Change/Bank" + juce::String(processor.supportsTrackVolumePan() ? "/Volume/Pan" : "");
+	// "Program Change/Bank" only means something for a supportsProgramChange() host - this one
+	// (see JivSequencerHost.h's own top comment) identifies a track's sound by patch instead, so
+	// swap the wording rather than talk about numbers this project never uses.
+	const juce::String fields = (processor.supportsProgramChange() ? juce::String("Program Change/Bank") : juce::String("patch"))
+	                             + juce::String(processor.supportsTrackVolumePan() ? "/Volume/Pan" : "");
 	juce::PopupMenu m;
 	m.addItem(1, "Send: re-sends every track's " + fields + " to the live patch right now, in case it's "
 	                 "drifted from what's stored here.",
@@ -476,12 +480,12 @@ void JivSequencerPanel::showResyncInfo() {
 
 // Pull direction - see JivSequencerHost.h's resyncProgramChanges()/captureLivePatchIntoTracks()
 // comments for how this is the reverse of what SYNC's own "send" action does. Destructive to
-// whatever every track's stored Program Change/Bank/Volume/Pan currently is, hence the confirm.
+// whatever every track's stored patch/channel/volume/pan currently is, hence the confirm.
 void JivSequencerPanel::confirmCaptureLivePatch() {
 	auto *aw = new juce::AlertWindow(
 		"Capture patch into song",
-		"Overwrites every track's stored Program Change/Bank/Volume/Pan with what the live "
-		"patch actually has right now, part by part. This can't be undone.",
+		"Overwrites every track's stored patch/channel/volume/pan with what the live "
+		"Performance actually has right now, part by part. This can't be undone.",
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Capture", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
@@ -801,9 +805,12 @@ void JivSequencerPanel::promptForTrackProgram(int track) {
 		aw->addTextEditor("program", current >= 0 ? juce::String(current + 1) : juce::String(), "Program (1-128):");
 	}
 	if (hasVolPan) {
+		// 0-127 (PAN 64=centre) here, not the D-110's own 0-100/0-14 this dialog was ported from -
+		// see JivSequencerHost.h's own top comment on why this project's Volume/Pan wire straight
+		// into the real JV-880 Part LEVEL/PAN range instead of MIDI CC7/CC10.
 		aw->addTextEditor("volume", currentVolume >= 0 ? juce::String(currentVolume) : juce::String(),
-		                   "Volume (0-100):");
-		aw->addTextEditor("pan", currentPan >= 0 ? juce::String(currentPan) : juce::String(), "Pan (0-14):");
+		                   "Volume (0-127):");
+		aw->addTextEditor("pan", currentPan >= 0 ? juce::String(currentPan) : juce::String(), "Pan (0-127, 64=centre):");
 	}
 	// Greyed placeholder, shown only while the field itself is genuinely empty - see this
 	// function's own comment above on why a hint must never become committed text.
@@ -1695,7 +1702,7 @@ void JivSequencerPanel::handleContextAction(juce::Point<float> p) {
 	if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 	if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
 	if (stopBounds.contains(p)) { processor.midiPanic(); return; }
-	if (playBounds.contains(p)) { eng.gotoBar(1); eng.play(); repaint(); return; }
+	if (playBounds.contains(p)) { processor.ensurePerformanceMode(); eng.gotoBar(1); eng.play(); repaint(); return; }
 	if (processor.supportsExtraTracks() && extraTracksZoneBounds.contains(p)) {
 		showExtraTracksMenu();
 		return;
@@ -1829,10 +1836,10 @@ void JivSequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	// stuck showing in the Monitor tab) until someone found the right-click panic below.
 	// A plain MIDI panic here covers it the same way right-click STOP always has.
 	if (stopBounds.contains(p)) { eng.stop(); processor.midiPanic(); repaint(); return; }
-	if (playBounds.contains(p)) { eng.play(); repaint(); return; }
+	if (playBounds.contains(p)) { processor.ensurePerformanceMode(); eng.play(); repaint(); return; }
 	if (recBounds.contains(p)) {
 		if (eng.isRecording()) eng.stopRecording();
-		else if (eng.getArmedTrack() >= 0) eng.startRecording();
+		else if (eng.getArmedTrack() >= 0) { processor.ensurePerformanceMode(); eng.startRecording(); }
 		repaint();
 		return;
 	}
@@ -1873,7 +1880,13 @@ void JivSequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		const auto &r = rows[static_cast<size_t>(t)];
 		if (r.muteBounds.contains(p)) { eng.setTrackMuted(t, !eng.isTrackMuted(t)); repaint(); return; }
 		if (r.soloBounds.contains(p)) { eng.setTrackSoloed(t, !eng.isTrackSoloed(t)); repaint(); return; }
-		if (r.armBounds.contains(p)) { eng.armTrack(eng.getArmedTrack() == t ? -1 : t); repaint(); return; }
+		if (r.armBounds.contains(p)) {
+			const bool wasThisTrack = eng.getArmedTrack() == t;
+			eng.armTrack(wasThisTrack ? -1 : t);
+			if (!wasThisTrack) processor.ensurePerformanceMode(); // just armed (not disarmed) - see ensurePerformanceMode()'s own comment
+			repaint();
+			return;
+		}
 		if (r.channelReadout.contains(p) && processor.supportsTrackChannelEdit()) { showTrackChannelMenu(t); return; }
 	}
 }

@@ -127,4 +127,14 @@ public:
 	virtual bool hasSoundSnapshot(int /*slot*/) const { return false; }
 	virtual void storeSoundSnapshotForSlot(int /*slot*/) {}
 	virtual void loadSoundSnapshotForSlot(int /*slot*/) {}
+
+	// JV-880-specific addition (2026-09-10, Alan's report): a sequencer track's patch only
+	// actually sounds once the firmware is in Performance mode (see PluginProcessor.h's
+	// PerformancePart) - Patch mode ignores it entirely, e.g. after a Browse click left the
+	// firmware in Patch mode (see setCurrentProgram()'s own comment on that desync). Called from
+	// JivSequencerPanel.cpp wherever the user starts doing something that depends on a track's
+	// assigned sound actually being audible - Play, arming/starting a recording - so they never
+	// have to remember to flip back to the Performance tab themselves first. No-op default since
+	// nothing else implements this host.
+	virtual void ensurePerformanceMode() {}
 };
