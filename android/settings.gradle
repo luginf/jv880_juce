@@ -1,0 +1,32 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// Fetches the same JUCE tag the desktop Projucer build uses (VirtualJiV.jucer's own
+// JUCE checkout, and .github/workflows/main.yml's `git clone -b 8.0.7`), so the Android build
+// stays on the exact same JUCE sources rather than introducing a second version to track. Runs
+// at settings-evaluation time - before app/build.gradle's sourceSets is read - because that Java
+// source set has to point at real, already-on-disk files; a CMake-side FetchContent (which only
+// runs later, inside the native build task) would be too late for Gradle's own Java compilation.
+// Same approach as the D110 Android port this was copied from (D110's own android/settings.gradle).
+def juceDir = new File(rootDir, "juce-src")
+if (!juceDir.exists()) {
+    println "jiv881 Android: fetching JUCE 8.0.7 into ${juceDir} (one-time, matches the desktop build's own JUCE version)..."
+    def clone = ["git", "clone", "--depth", "1", "--branch", "8.0.7",
+                 "https://github.com/juce-framework/JUCE.git", juceDir.absolutePath]
+    def process = clone.execute()
+    process.consumeProcessOutput(System.out, System.err)
+    process.waitFor()
+    if (process.exitValue() != 0) {
+        throw new GradleException("Failed to fetch JUCE - see output above. " +
+            "You can also clone it yourself: git clone --depth 1 --branch 8.0.7 " +
+            "https://github.com/juce-framework/JUCE.git ${juceDir.absolutePath}")
+    }
+}
+
+rootProject.name = 'jiv881Android'
+include ':app'
