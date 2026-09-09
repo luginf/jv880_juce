@@ -81,3 +81,24 @@ On any panel skin, useful gestures beyond a plain click:
   alongside the ROM banks.
 - **Expansions (SR-JV80)**: if a supported expansion board dump is present in the ROM folder, its
   patches show up in Browse and are assignable like any other patch (Performance Parts included).
+
+## Android
+
+A Standalone Android build (`android/`) - same real firmware core, front panel, keyboard and
+sequencer as the desktop app, no plugin wrapper. Not the tabbed editor: only Panel/Keyboard,
+Browse and Sequencer, reached from a single hamburger menu (☰), top-right.
+
+Build: `cd android && ./gradlew assembleDebug` (needs the Android SDK/NDK - see
+`android/local.properties`). Install with `adb install -r
+app/build/outputs/apk/debug/app-debug.apk`.
+
+ROMs: hamburger menu -> **Choose ROM files...** - select all your JV-880 ROM files at once
+(long-press the first to enter multi-select, then tap the rest). Works before the synth has ever
+started. Alternatively `adb push` the same files into
+`/storage/emulated/0/Android/data/com.jiv881.android/files/roms/` - a file manager app can't
+reach that folder on Android 11+ (scoped storage blocks every app but the owner), which is why
+the in-app picker is the recommended route.
+
+Not yet done: no app store distribution, debug build only, verified so far only by compiling -
+real-device testing still needed (see `.claude/dev-notes/android.md` for the D-110 sibling
+project's own catalogue of JUCE/Android gotchas this port leans on).

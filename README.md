@@ -11,9 +11,9 @@ Based on [NukeYKT's SC55](https://github.com/nukeykt/Nuked-SC55) and on [https:/
 
 You'll need ROMs to use this software. During the first run you will be able to open the destination ROM folder. Copy your ROMs there, restart the plugin, and wait for a minute for the first load to happen (waveform ROMs need to be descrambled and copied to a cache, which may take a minute). Have fun!
 
-You can get the ROMs at archive.org, search for jv880_rompack_v1 or roland-jv880-rom
+Some ROMs known to be working are jv880_rompack_v1 or roland-jv880-rom.
 
-And the original docs at:
+The original docs:
 - [https://archive.org/details/synthmanual-roland-jv-880-owners-manual](https://archive.org/details/synthmanual-roland-jv-880-owners-manual) (in English)
 - [http://synthedoc.free.fr/Roland/Doc/Serie-JV/roland_jv880_fr.pdf](http://synthedoc.free.fr/Roland/Doc/Serie-JV/roland_jv880_fr.pdf) (in French)
 

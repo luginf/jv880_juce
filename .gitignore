@@ -7,3 +7,14 @@ JuceLibraryCode
 *.bin
 *.zip
 CLAUDE.md
+
+# Android app (android/): JUCE is fetched fresh (by settings.gradle) rather than vendored, and
+# local.properties holds a machine-specific SDK path - same convention as the D-110 sibling
+# project's own Android port.
+android/juce-src/
+android/local.properties
+android/.gradle/
+android/.idea/
+android/.cxx/
+android/app/build/
+android/app/.cxx/
